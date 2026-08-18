@@ -2,6 +2,8 @@
 const PEER_PREFIX = "streamshare-room-"; // Prefixo para evitar conflito de IDs globais no PeerJS Cloud
 let peer = null;
 let localStream = null;
+let screenStream = null;
+let micStream = null;
 let activeConnections = new Set(); // Para o Streamer rastrear viewers ativos
 
 // Referências de Elementos do DOM
@@ -16,6 +18,7 @@ const viewerForm = document.getElementById('viewer-form');
 
 const streamerRoomInput = document.getElementById('streamer-room-input');
 const btnStartStream = document.getElementById('btn-start-stream');
+const chkTransmitMic = document.getElementById('chk-transmit-mic');
 const btnStopStream = document.getElementById('btn-stop-stream');
 const streamerStatusBadge = document.getElementById('streamer-status-badge');
 const streamerStatusText = document.getElementById('streamer-status-text');
@@ -92,6 +95,46 @@ btnCopyLink.addEventListener('click', () => {
 
 // --- LÓGICA DO STREAMER ---
 
+// Função auxiliar para mixar faixas de áudio da tela (sistema) e do microfone
+function mixAudioTracks(screenStream, micStream) {
+    const hasScreenAudio = screenStream && screenStream.getAudioTracks().length > 0;
+    const hasMicAudio = micStream && micStream.getAudioTracks().length > 0;
+
+    if (!hasScreenAudio && !hasMicAudio) {
+        return null;
+    }
+
+    // Se apenas um tem áudio, retorna a faixa dele diretamente (sem precisar de AudioContext)
+    if (hasScreenAudio && !hasMicAudio) {
+        return screenStream.getAudioTracks()[0];
+    }
+    if (!hasScreenAudio && hasMicAudio) {
+        return micStream.getAudioTracks()[0];
+    }
+
+    // Se ambos têm áudio, usamos o AudioContext para mesclá-los
+    try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        const audioCtx = new AudioContextClass();
+        const destNode = audioCtx.createMediaStreamDestination();
+
+        // Fonte 1: Áudio do Sistema (tela)
+        const screenSource = audioCtx.createMediaStreamSource(screenStream);
+        screenSource.connect(destNode);
+
+        // Fonte 2: Áudio do Microfone
+        const micSource = audioCtx.createMediaStreamSource(micStream);
+        micSource.connect(destNode);
+
+        // Retorna a faixa resultante mixada
+        return destNode.stream.getAudioTracks()[0];
+    } catch (e) {
+        console.error("Erro ao inicializar AudioContext para mixagem:", e);
+        // Fallback: retorna o áudio da tela
+        return screenStream.getAudioTracks()[0];
+    }
+}
+
 async function startStreaming(roomId) {
     if (!roomId) {
         showToast("Por favor, digite ou gere um código de sala.");
@@ -107,12 +150,12 @@ async function startStreaming(roomId) {
 
     const peerId = PEER_PREFIX + cleanRoomId;
     btnStartStream.disabled = true;
-    btnStartStream.textContent = "Solicitando Tela...";
+    btnStartStream.textContent = "Solicitando Mídia...";
 
     try {
-        // 1. Captura da tela e áudio
+        // 1. Captura da tela e áudio do sistema
         // Nota: áudio do sistema só funciona no Windows se o usuário marcar "Compartilhar áudio do sistema"
-        localStream = await navigator.mediaDevices.getDisplayMedia({
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
             video: {
                 cursor: "always",
                 frameRate: { ideal: 30, max: 60 }
@@ -124,8 +167,40 @@ async function startStreaming(roomId) {
             }
         });
 
+        // 2. Captura do microfone (se marcado e disponível)
+        if (chkTransmitMic && chkTransmitMic.checked) {
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+            } catch (micErr) {
+                console.warn("Microfone não autorizado ou indisponível:", micErr);
+                showToast("Aviso: Microfone indisponível. Transmitindo apenas áudio do sistema.");
+            }
+        }
+
+        // 3. Monta o stream final combinado (vídeo + áudio mixado)
+        const tracks = [];
+        
+        // Adiciona faixa de vídeo da tela
+        if (screenStream.getVideoTracks().length > 0) {
+            tracks.push(screenStream.getVideoTracks()[0]);
+        }
+
+        // Mixa e adiciona áudio
+        const mixedAudioTrack = mixAudioTracks(screenStream, micStream);
+        if (mixedAudioTrack) {
+            tracks.push(mixedAudioTrack);
+        }
+
+        localStream = new MediaStream(tracks);
+
         // Ouvir quando o usuário clica no botão nativo "Parar Compartilhamento" do navegador
-        localStream.getVideoTracks()[0].onended = () => {
+        screenStream.getVideoTracks()[0].onended = () => {
             stopStreaming();
             showToast("Transmissão encerrada pelo navegador.");
         };
@@ -134,7 +209,7 @@ async function startStreaming(roomId) {
         streamerPreview.srcObject = localStream;
         streamerPlaceholder.classList.add('hidden');
 
-        // 2. Inicializa conexão com o servidor de sinalização do PeerJS
+        // 4. Inicializa conexão com o servidor de sinalização do PeerJS
         peer = new Peer(peerId);
 
         peer.on('open', (id) => {
@@ -152,7 +227,7 @@ async function startStreaming(roomId) {
             updateViewerCount();
         });
 
-        // 3. Aguarda conexões de sinalização dos Viewers
+        // 5. Aguarda conexões de sinalização dos Viewers
         peer.on('connection', (conn) => {
             activeConnections.add(conn);
             updateViewerCount();
@@ -188,7 +263,7 @@ async function startStreaming(roomId) {
     } catch (err) {
         console.error("Erro ao capturar tela:", err);
         showToast("Permissão de tela negada ou erro ao iniciar captura.");
-        resetStreamerUI();
+        stopStreaming();
     }
 }
 
@@ -196,6 +271,14 @@ function stopStreaming() {
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
+    }
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+        screenStream = null;
+    }
+    if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+        micStream = null;
     }
     if (peer) {
         peer.destroy();
