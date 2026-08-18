@@ -31,6 +31,7 @@ const streamerPlaceholder = document.getElementById('streamer-placeholder');
 const viewerRoomInput = document.getElementById('viewer-room-input');
 const btnConnectViewer = document.getElementById('btn-connect-viewer');
 const btnDisconnectViewer = document.getElementById('btn-disconnect-viewer');
+const btnTheaterMode = document.getElementById('btn-theater-mode');
 const viewerStatusBadge = document.getElementById('viewer-status-badge');
 const viewerStatusText = document.getElementById('viewer-status-text');
 const viewerVideo = document.getElementById('viewer-video');
@@ -389,6 +390,10 @@ function disconnectViewer() {
         peer = null;
     }
     viewerVideo.srcObject = null;
+    document.body.classList.remove('theater-mode');
+    if (btnTheaterMode) {
+        btnTheaterMode.textContent = "🎭 Modo Teatro";
+    }
     resetViewerUI();
     showSection(setupSection);
 }
@@ -424,6 +429,15 @@ btnConnectViewer.addEventListener('click', () => {
 });
 
 btnDisconnectViewer.addEventListener('click', disconnectViewer);
+
+btnTheaterMode.addEventListener('click', () => {
+    document.body.classList.toggle('theater-mode');
+    if (document.body.classList.contains('theater-mode')) {
+        btnTheaterMode.textContent = "📺 Modo Normal";
+    } else {
+        btnTheaterMode.textContent = "🎭 Modo Teatro";
+    }
+});
 
 
 // --- AUTO-CONECTAR SE HOUVER PARÂMETRO NA URL ---
