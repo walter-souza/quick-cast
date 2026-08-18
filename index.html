@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamShare MVP - Compartilhamento de Tela P2P</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- PeerJS CDN -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>StreamShare</h1>
+            <p class="subtitle">Compartilhamento de tela em tempo real, direto do seu navegador</p>
+        </header>
+
+        <main>
+            <!-- 1. SELEÇÃO DE MODO E CONFIGURAÇÃO -->
+            <section id="setup-section" class="section active">
+                <div class="mode-selection">
+                    <div id="select-streamer" class="mode-card">
+                        <div class="mode-icon">🖥️</div>
+                        <h3>Transmitir Tela</h3>
+                        <p>Compartilhe sua tela e áudio com seus amigos através de um link.</p>
+                    </div>
+                    <div id="select-viewer" class="mode-card">
+                        <div class="mode-icon">👀</div>
+                        <h3>Assistir Transmissão</h3>
+                        <p>Digite o código da sala de um amigo para assistir à tela dele.</p>
+                    </div>
+                </div>
+
+                <!-- Formulário Streamer -->
+                <div id="streamer-form" class="form-group hidden mt-4">
+                    <label for="streamer-room-input">Código da Sala (apenas letras, números e traço):</label>
+                    <div class="input-row">
+                        <input type="text" id="streamer-room-input" placeholder="ex: minha-transmissao" autocomplete="off">
+                        <button id="btn-start-stream" class="btn">Iniciar Transmissão</button>
+                    </div>
+                    <button class="btn btn-secondary mt-4 btn-back">Voltar</button>
+                </div>
+
+                <!-- Formulário Viewer -->
+                <div id="viewer-form" class="form-group hidden mt-4">
+                    <label for="viewer-room-input">Código da Sala do seu amigo:</label>
+                    <div class="input-row">
+                        <input type="text" id="viewer-room-input" placeholder="Digite o código da sala..." autocomplete="off">
+                        <button id="btn-connect-viewer" class="btn">Entrar na Sala</button>
+                    </div>
+                    <button class="btn btn-secondary mt-4 btn-back">Voltar</button>
+                </div>
+            </section>
+
+            <!-- 2. TELA DO STREAMER (TRANSMISSÃO ATIVA) -->
+            <section id="streamer-section" class="section">
+                <div class="status-bar">
+                    <div class="status-left">
+                        <span id="streamer-status-badge" class="badge badge-offline">Offline</span>
+                        <span id="streamer-status-text">Iniciando...</span>
+                    </div>
+                    <div class="viewers-count">
+                        <span>Espectadores: <strong id="streamer-viewers-count">0</strong></span>
+                    </div>
+                </div>
+
+                <div class="share-box">
+                    <label>Compartilhe este link com seus amigos:</label>
+                    <div class="share-row">
+                        <input type="text" id="share-link-input" readonly>
+                        <button id="btn-copy-link" class="btn btn-secondary">Copiar Link</button>
+                    </div>
+                </div>
+
+                <div class="video-container">
+                    <div id="streamer-placeholder" class="video-placeholder">
+                        <p>Compartilhando Tela</p>
+                        <small class="subtitle">Seus amigos estão assistindo ao vivo</small>
+                    </div>
+                    <!-- muted para evitar feedback de áudio local se o próprio streamer escutar -->
+                    <video id="streamer-preview" autoplay playsinline muted></video>
+                </div>
+
+                <div class="actions-row">
+                    <button id="btn-stop-stream" class="btn btn-danger">Parar Transmissão</button>
+                </div>
+            </section>
+
+            <!-- 3. TELA DO VIEWER (ASSISTIR AO VIVO) -->
+            <section id="viewer-section" class="section">
+                <div class="status-bar">
+                    <div class="status-left">
+                        <span id="viewer-status-badge" class="badge badge-offline">Desconectado</span>
+                        <span id="viewer-status-text">Conectando ao streamer...</span>
+                    </div>
+                </div>
+
+                <div class="video-container">
+                    <div id="viewer-placeholder" class="video-placeholder">
+                        <div class="mode-icon" id="viewer-placeholder-icon">⏳</div>
+                        <p id="viewer-placeholder-text">Aguardando transmissão começar...</p>
+                        <button id="btn-unmute-viewer" class="btn btn-success hidden">Ativar Áudio e Play</button>
+                    </div>
+                    <video id="viewer-video" autoplay playsinline controls></video>
+                </div>
+
+                <div class="actions-row">
+                    <button id="btn-disconnect-viewer" class="btn btn-secondary">Voltar ao Menu</button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast">Mensagem de status</div>
+
+    <script src="app.js"></script>
+</body>
+</html>

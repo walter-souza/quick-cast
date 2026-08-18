@@ -1,0 +1,358 @@
+// Constantes e Estados da Aplicação
+const PEER_PREFIX = "streamshare-room-"; // Prefixo para evitar conflito de IDs globais no PeerJS Cloud
+let peer = null;
+let localStream = null;
+let activeConnections = new Set(); // Para o Streamer rastrear viewers ativos
+
+// Referências de Elementos do DOM
+const setupSection = document.getElementById('setup-section');
+const streamerSection = document.getElementById('streamer-section');
+const viewerSection = document.getElementById('viewer-section');
+
+const selectStreamer = document.getElementById('select-streamer');
+const selectViewer = document.getElementById('select-viewer');
+const streamerForm = document.getElementById('streamer-form');
+const viewerForm = document.getElementById('viewer-form');
+
+const streamerRoomInput = document.getElementById('streamer-room-input');
+const btnStartStream = document.getElementById('btn-start-stream');
+const btnStopStream = document.getElementById('btn-stop-stream');
+const streamerStatusBadge = document.getElementById('streamer-status-badge');
+const streamerStatusText = document.getElementById('streamer-status-text');
+const streamerViewersCount = document.getElementById('streamer-viewers-count');
+const shareLinkInput = document.getElementById('share-link-input');
+const btnCopyLink = document.getElementById('btn-copy-link');
+const streamerPreview = document.getElementById('streamer-preview');
+const streamerPlaceholder = document.getElementById('streamer-placeholder');
+
+const viewerRoomInput = document.getElementById('viewer-room-input');
+const btnConnectViewer = document.getElementById('btn-connect-viewer');
+const btnDisconnectViewer = document.getElementById('btn-disconnect-viewer');
+const viewerStatusBadge = document.getElementById('viewer-status-badge');
+const viewerStatusText = document.getElementById('viewer-status-text');
+const viewerVideo = document.getElementById('viewer-video');
+const viewerPlaceholder = document.getElementById('viewer-placeholder');
+const viewerPlaceholderText = document.getElementById('viewer-placeholder-text');
+const btnUnmuteViewer = document.getElementById('btn-unmute-viewer');
+
+const toast = document.getElementById('toast');
+const btnBackElements = document.querySelectorAll('.btn-back');
+
+// --- EFEITOS DE TRANSIÇÃO E INTERFACE ---
+
+// Exibe mensagem temporária (Toast)
+function showToast(message) {
+    toast.textContent = message;
+    toast.classList.add('show');
+    setTimeout(() => {
+        toast.classList.remove('show');
+    }, 4000);
+}
+
+// Navegação entre seções
+function showSection(section) {
+    [setupSection, streamerSection, viewerSection].forEach(s => s.classList.remove('active'));
+    section.classList.add('active');
+}
+
+// Configura volta para a tela inicial
+btnBackElements.forEach(btn => {
+    btn.addEventListener('click', () => {
+        streamerForm.classList.add('hidden');
+        viewerForm.classList.add('hidden');
+        selectStreamer.parentNode.classList.remove('hidden');
+    });
+});
+
+// Seleção do Card Streamer
+selectStreamer.addEventListener('click', () => {
+    selectStreamer.parentNode.classList.add('hidden');
+    streamerForm.classList.remove('hidden');
+    // Sugere um código aleatório simples
+    streamerRoomInput.value = Math.random().toString(36).substring(2, 8);
+    streamerRoomInput.focus();
+});
+
+// Seleção do Card Viewer
+selectViewer.addEventListener('click', () => {
+    selectViewer.parentNode.classList.add('hidden');
+    viewerForm.classList.remove('hidden');
+    viewerRoomInput.focus();
+});
+
+// Copiar Link da Transmissão
+btnCopyLink.addEventListener('click', () => {
+    shareLinkInput.select();
+    shareLinkInput.setSelectionRange(0, 99999); // Para dispositivos móveis
+    navigator.clipboard.writeText(shareLinkInput.value)
+        .then(() => showToast("Link copiado para a área de transferência! 📋"))
+        .catch(() => showToast("Erro ao copiar link."));
+});
+
+
+// --- LÓGICA DO STREAMER ---
+
+async function startStreaming(roomId) {
+    if (!roomId) {
+        showToast("Por favor, digite ou gere um código de sala.");
+        return;
+    }
+
+    // Filtra caracteres inválidos
+    const cleanRoomId = roomId.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
+    if (!cleanRoomId) {
+        showToast("Código inválido. Use apenas letras, números, hífen e sublinhado.");
+        return;
+    }
+
+    const peerId = PEER_PREFIX + cleanRoomId;
+    btnStartStream.disabled = true;
+    btnStartStream.textContent = "Solicitando Tela...";
+
+    try {
+        // 1. Captura da tela e áudio
+        // Nota: áudio do sistema só funciona no Windows se o usuário marcar "Compartilhar áudio do sistema"
+        localStream = await navigator.mediaDevices.getDisplayMedia({
+            video: {
+                cursor: "always",
+                frameRate: { ideal: 30, max: 60 }
+            },
+            audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+            }
+        });
+
+        // Ouvir quando o usuário clica no botão nativo "Parar Compartilhamento" do navegador
+        localStream.getVideoTracks()[0].onended = () => {
+            stopStreaming();
+            showToast("Transmissão encerrada pelo navegador.");
+        };
+
+        // Exibe preview local (mutado para não dar eco)
+        streamerPreview.srcObject = localStream;
+        streamerPlaceholder.classList.add('hidden');
+
+        // 2. Inicializa conexão com o servidor de sinalização do PeerJS
+        peer = new Peer(peerId);
+
+        peer.on('open', (id) => {
+            showSection(streamerSection);
+            streamerStatusBadge.className = "badge badge-live";
+            streamerStatusBadge.textContent = "LIVE";
+            streamerStatusText.textContent = `Transmitindo sala: ${cleanRoomId}`;
+            
+            // Gera link de compartilhamento
+            const shareUrl = `${window.location.origin}${window.location.pathname}?room=${cleanRoomId}`;
+            shareLinkInput.value = shareUrl;
+            
+            showToast("Transmissão iniciada! Envie o link para os amigos. 🚀");
+            activeConnections.clear();
+            updateViewerCount();
+        });
+
+        // 3. Aguarda conexões de sinalização dos Viewers
+        peer.on('connection', (conn) => {
+            activeConnections.add(conn);
+            updateViewerCount();
+
+            // Quando a conexão de dados abrir, ligamos (call) enviando o stream de vídeo
+            conn.on('open', () => {
+                const call = peer.call(conn.peer, localStream);
+                
+                // Trata desconexão do viewer
+                conn.on('close', () => {
+                    activeConnections.delete(conn);
+                    updateViewerCount();
+                });
+            });
+
+            conn.on('error', (err) => {
+                console.error("Erro na conexão com viewer:", err);
+                activeConnections.delete(conn);
+                updateViewerCount();
+            });
+        });
+
+        peer.on('error', (err) => {
+            console.error("Erro no PeerJS do Streamer:", err);
+            if (err.type === 'unavailable-id') {
+                showToast("Este código de sala já está ativo em outra transmissão. Escolha outro!");
+            } else {
+                showToast(`Erro de conexão: ${err.type}`);
+            }
+            stopStreaming();
+        });
+
+    } catch (err) {
+        console.error("Erro ao capturar tela:", err);
+        showToast("Permissão de tela negada ou erro ao iniciar captura.");
+        resetStreamerUI();
+    }
+}
+
+function stopStreaming() {
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+    }
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+    activeConnections.clear();
+    resetStreamerUI();
+    showSection(setupSection);
+}
+
+function resetStreamerUI() {
+    btnStartStream.disabled = false;
+    btnStartStream.textContent = "Iniciar Transmissão";
+    streamerStatusBadge.className = "badge badge-offline";
+    streamerStatusBadge.textContent = "Offline";
+    streamerStatusText.textContent = "Iniciando...";
+    streamerViewersCount.textContent = "0";
+    shareLinkInput.value = "";
+    streamerPreview.srcObject = null;
+    streamerPlaceholder.classList.remove('hidden');
+}
+
+function updateViewerCount() {
+    streamerViewersCount.textContent = activeConnections.size;
+}
+
+btnStartStream.addEventListener('click', () => {
+    startStreaming(streamerRoomInput.value);
+});
+
+btnStopStream.addEventListener('click', stopStreaming);
+
+
+// --- LÓGICA DO VIEWER ---
+
+function connectToStream(roomId) {
+    if (!roomId) {
+        showToast("Código de sala inválido.");
+        return;
+    }
+
+    const cleanRoomId = roomId.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
+    const streamerPeerId = PEER_PREFIX + cleanRoomId;
+
+    showSection(viewerSection);
+    viewerStatusBadge.className = "badge badge-offline";
+    viewerStatusBadge.textContent = "Conectando";
+    viewerStatusText.textContent = "Conectando ao servidor...";
+    viewerPlaceholderText.textContent = "Buscando transmissão...";
+    btnUnmuteViewer.classList.add('hidden');
+
+    // Inicializa o Peer do Viewer (com ID aleatório gerado pelo servidor)
+    peer = new Peer();
+
+    peer.on('open', () => {
+        viewerStatusText.textContent = "Procurando streamer...";
+        // Conecta ao canal de dados do Streamer para avisar que está online
+        const conn = peer.connect(streamerPeerId);
+
+        conn.on('open', () => {
+            viewerStatusBadge.className = "badge badge-live";
+            viewerStatusBadge.textContent = "Conectado";
+            viewerStatusText.textContent = "Conectado ao Streamer. Aguardando vídeo...";
+            viewerPlaceholderText.textContent = "Conexão estabelecida! Carregando transmissão...";
+        });
+
+        conn.on('close', () => {
+            showToast("O streamer encerrou a transmissão.");
+            disconnectViewer();
+        });
+    });
+
+    // Recebe a chamada (call) de vídeo do streamer
+    peer.on('call', (call) => {
+        call.answer(); // Responde sem enviar stream próprio
+
+        call.on('stream', (remoteStream) => {
+            viewerStatusText.textContent = "Assistindo ao vivo";
+            viewerVideo.srcObject = remoteStream;
+            
+            // Oculta o placeholder e tenta rodar o vídeo
+            viewerPlaceholder.classList.add('hidden');
+            
+            viewerVideo.play().catch(err => {
+                console.log("Autoplay bloqueado pelo navegador devido a áudio:", err);
+                // Se o autoplay falhar, exibe botão de clique do usuário
+                viewerPlaceholder.classList.remove('hidden');
+                viewerPlaceholderText.textContent = "A transmissão está pronta, mas o navegador bloqueou o som automático.";
+                btnUnmuteViewer.classList.remove('hidden');
+            });
+        });
+    });
+
+    peer.on('error', (err) => {
+        console.error("Erro no PeerJS do Viewer:", err);
+        if (err.type === 'peer-unavailable') {
+            showToast("Sala não encontrada. Verifique se o código está correto e se o streamer está online.");
+        } else {
+            showToast(`Erro de conexão: ${err.type}`);
+        }
+        disconnectViewer();
+    });
+}
+
+function disconnectViewer() {
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+    viewerVideo.srcObject = null;
+    resetViewerUI();
+    showSection(setupSection);
+}
+
+function resetViewerUI() {
+    viewerStatusBadge.className = "badge badge-offline";
+    viewerStatusBadge.textContent = "Desconectado";
+    viewerStatusText.textContent = "Conectando ao streamer...";
+    viewerPlaceholder.classList.remove('hidden');
+    viewerPlaceholderText.textContent = "Aguardando transmissão começar...";
+    btnUnmuteViewer.classList.add('hidden');
+    // Remove parâmetro ?room da URL para limpar o estado se o usuário voltar pro menu
+    if (window.location.search.includes('room=')) {
+        window.history.pushState({}, document.title, window.location.pathname);
+    }
+}
+
+// Trata o botão de desmutar caso o autoplay seja bloqueado
+btnUnmuteViewer.addEventListener('click', () => {
+    viewerVideo.muted = false;
+    viewerVideo.play()
+        .then(() => {
+            viewerPlaceholder.classList.add('hidden');
+            btnUnmuteViewer.classList.add('hidden');
+        })
+        .catch(err => {
+            showToast("Erro ao iniciar áudio: " + err.message);
+        });
+});
+
+btnConnectViewer.addEventListener('click', () => {
+    connectToStream(viewerRoomInput.value);
+});
+
+btnDisconnectViewer.addEventListener('click', disconnectViewer);
+
+
+// --- AUTO-CONECTAR SE HOUVER PARÂMETRO NA URL ---
+
+window.addEventListener('DOMContentLoaded', () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomParam = urlParams.get('room');
+    if (roomParam) {
+        viewerRoomInput.value = roomParam;
+        // Pequeno timeout para garantir que o DOM e bibliotecas estão totalmente prontos
+        setTimeout(() => {
+            connectToStream(roomParam);
+        }, 500);
+    }
+});
