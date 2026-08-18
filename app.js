@@ -27,6 +27,7 @@ const shareLinkInput = document.getElementById('share-link-input');
 const btnCopyLink = document.getElementById('btn-copy-link');
 const streamerPreview = document.getElementById('streamer-preview');
 const streamerPlaceholder = document.getElementById('streamer-placeholder');
+const selectStreamQuality = document.getElementById('select-stream-quality');
 
 const viewerRoomInput = document.getElementById('viewer-room-input');
 const btnConnectViewer = document.getElementById('btn-connect-viewer');
@@ -136,6 +137,88 @@ function mixAudioTracks(screenStream, micStream) {
     }
 }
 
+// Definições de qualidade suportadas
+const QUALITY_SETTINGS = {
+    '720p': {
+        width: 1280,
+        height: 720,
+        frameRate: 30,
+        bitrate: 1500000 // 1.5 Mbps
+    },
+    '1080p': {
+        width: 1920,
+        height: 1080,
+        frameRate: 30,
+        bitrate: 3000000 // 3.0 Mbps
+    },
+    'max': {
+        width: null, // sem limite (resolução nativa)
+        height: null,
+        frameRate: 60,
+        bitrate: null // sem limite (automático do WebRTC)
+    }
+};
+
+// Aplica configurações de vídeo (resolução, FPS) e bitrate em tempo real
+async function applyQualitySettings(qualityKey) {
+    if (!screenStream || !localStream) return;
+
+    const settings = QUALITY_SETTINGS[qualityKey];
+    const videoTrack = screenStream.getVideoTracks()[0];
+
+    if (videoTrack) {
+        // 1. Aplica novos limites de resolução e framerate no track da tela
+        const constraints = {
+            width: settings.width ? { max: settings.width, ideal: settings.width } : undefined,
+            height: settings.height ? { max: settings.height, ideal: settings.height } : undefined,
+            frameRate: settings.frameRate ? { max: settings.frameRate, ideal: settings.frameRate } : undefined
+        };
+
+        try {
+            await videoTrack.applyConstraints(constraints);
+            console.log(`Constraints aplicadas para ${qualityKey}:`, constraints);
+        } catch (err) {
+            console.error("Erro ao aplicar constraints de vídeo:", err);
+            showToast("Não foi possível ajustar a resolução da tela.");
+        }
+    }
+
+    // 2. Aplica limites de bitrate em todas as conexões de viewers ativos
+    applyBitrateLimit(settings.bitrate);
+}
+
+// Varre todos os viewers ativos e limita a banda de vídeo
+function applyBitrateLimit(bitrateBps) {
+    if (!peer) return;
+
+    for (const peerId in peer.connections) {
+        const connections = peer.connections[peerId];
+        connections.forEach(conn => {
+            if (conn.peerConnection) {
+                const senders = conn.peerConnection.getSenders();
+                const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+                if (videoSender) {
+                    try {
+                        const params = videoSender.getParameters();
+                        if (!params.encodings) {
+                            params.encodings = [{}];
+                        }
+                        if (bitrateBps) {
+                            params.encodings[0].maxBitrate = bitrateBps;
+                        } else {
+                            delete params.encodings[0].maxBitrate;
+                        }
+                        videoSender.setParameters(params);
+                        console.log(`Bitrate definido para ${bitrateBps ? bitrateBps / 1000 + 'kbps' : 'ilimitado'} no viewer ${peerId}`);
+                    } catch (err) {
+                        console.error("Erro ao definir parâmetros de bitrate:", err);
+                    }
+                }
+            }
+        });
+    }
+}
+
 async function startStreaming(roomId) {
     if (!roomId) {
         showToast("Por favor, digite ou gere um código de sala.");
@@ -200,6 +283,10 @@ async function startStreaming(roomId) {
 
         localStream = new MediaStream(tracks);
 
+        // Aplica as configurações iniciais de qualidade selecionadas no dropdown
+        const currentQuality = selectStreamQuality.value;
+        await applyQualitySettings(currentQuality);
+
         // Ouvir quando o usuário clica no botão nativo "Parar Compartilhamento" do navegador
         screenStream.getVideoTracks()[0].onended = () => {
             stopStreaming();
@@ -237,6 +324,13 @@ async function startStreaming(roomId) {
             conn.on('open', () => {
                 const call = peer.call(conn.peer, localStream);
                 
+                // Aplica o limite de bitrate da qualidade atual para esta conexão após a negociação
+                setTimeout(() => {
+                    const currentQuality = selectStreamQuality.value;
+                    const settings = QUALITY_SETTINGS[currentQuality];
+                    applyBitrateLimit(settings.bitrate);
+                }, 1000);
+
                 // Trata desconexão do viewer
                 conn.on('close', () => {
                     activeConnections.delete(conn);
@@ -437,6 +531,10 @@ btnTheaterMode.addEventListener('click', () => {
     } else {
         btnTheaterMode.textContent = "🎭 Modo Teatro";
     }
+});
+
+selectStreamQuality.addEventListener('change', (e) => {
+    applyQualitySettings(e.target.value);
 });
 
 
