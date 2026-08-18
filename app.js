@@ -5,6 +5,8 @@ let localStream = null;
 let screenStream = null;
 let micStream = null;
 let activeConnections = new Set(); // Para o Streamer rastrear viewers ativos
+let streamWatchdogInterval = null;
+let lastDataReceivedTime = 0;
 
 // Referências de Elementos do DOM
 const setupSection = document.getElementById('setup-section');
@@ -409,11 +411,44 @@ btnStopStream.addEventListener('click', stopStreaming);
 
 // --- LÓGICA DO VIEWER ---
 
+// Monitoramento de inatividade do stream (Watchdog)
+function startStreamWatchdog() {
+    lastDataReceivedTime = Date.now();
+    
+    if (streamWatchdogInterval) {
+        clearInterval(streamWatchdogInterval);
+    }
+
+    streamWatchdogInterval = setInterval(() => {
+        // Ignora a contagem se o próprio espectador pausou o player voluntariamente
+        if (viewerVideo.paused && viewerVideo.srcObject) {
+            lastDataReceivedTime = Date.now();
+            return;
+        }
+
+        const secondsInactive = (Date.now() - lastDataReceivedTime) / 1000;
+        if (secondsInactive >= 30) {
+            console.warn("Nenhum dado de transmissão recebido por 30 segundos. Desconectando.");
+            showToast("Transmissão interrompida (30s sem novos dados).");
+            disconnectViewer();
+        }
+    }, 2000);
+}
+
+function stopStreamWatchdog() {
+    if (streamWatchdogInterval) {
+        clearInterval(streamWatchdogInterval);
+        streamWatchdogInterval = null;
+    }
+}
+
 function connectToStream(roomId) {
     if (!roomId) {
         showToast("Código de sala inválido.");
         return;
     }
+
+    startStreamWatchdog();
 
     const cleanRoomId = roomId.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
     const streamerPeerId = PEER_PREFIX + cleanRoomId;
@@ -479,6 +514,7 @@ function connectToStream(roomId) {
 }
 
 function disconnectViewer() {
+    stopStreamWatchdog();
     if (peer) {
         peer.destroy();
         peer = null;
@@ -507,6 +543,7 @@ function resetViewerUI() {
 
 // Trata o botão de desmutar caso o autoplay seja bloqueado
 btnUnmuteViewer.addEventListener('click', () => {
+    lastDataReceivedTime = Date.now();
     viewerVideo.muted = false;
     viewerVideo.play()
         .then(() => {
@@ -535,6 +572,12 @@ btnTheaterMode.addEventListener('click', () => {
 
 selectStreamQuality.addEventListener('change', (e) => {
     applyQualitySettings(e.target.value);
+});
+
+viewerVideo.addEventListener('timeupdate', () => {
+    if (viewerVideo.currentTime > 0) {
+        lastDataReceivedTime = Date.now();
+    }
 });
 
 
