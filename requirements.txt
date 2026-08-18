@@ -1,0 +1,6 @@
+aiortc>=1.8.0
+bettercam>=1.1.2
+soundcard>=0.4.3
+websockets>=12.0
+numpy>=1.26.0
+pillow>=10.2.0
