@@ -873,9 +873,49 @@ const QUALITY_BITRATE_SETTINGS = {
 };
 
 async function applyQualitySettings(qualityKey) {
-    if (!localStream) return;
-    const bps = QUALITY_BITRATE_SETTINGS[qualityKey];
-    applyBitrateLimit(bps);
+    const profile = QUALITY_PROFILES[qualityKey];
+    if (!profile) return;
+
+    if (composerCanvas) {
+        const oldWidth = composerCanvas.width;
+        const oldHeight = composerCanvas.height;
+        const newWidth = profile.width;
+        const newHeight = profile.height;
+
+        if (oldWidth !== newWidth || oldHeight !== newHeight) {
+            // Atualiza tamanho do canvas do mixer
+            composerCanvas.width = newWidth;
+            composerCanvas.height = newHeight;
+
+            // Redimensiona as fontes proporcionalmente para manter o layout no canvas
+            const scaleX = newWidth / oldWidth;
+            const scaleY = newHeight / oldHeight;
+            
+            scenes.forEach(s => {
+                s.sources.forEach(src => {
+                    src.x = Math.round(src.x * scaleX);
+                    src.y = Math.round(src.y * scaleY);
+                    src.width = Math.round(src.width * scaleX);
+                    src.height = Math.round(src.height * scaleY);
+                });
+            });
+            console.log(`Canvas redimensionado de ${oldWidth}x${oldHeight} para ${newWidth}x${newHeight}`);
+        }
+    }
+
+    // Se estiver transmitindo, aplica no WebRTC e no worker
+    if (localStream) {
+        // Atualiza taxa de frames no worker do renderizador
+        if (renderWorker) {
+            renderWorker.postMessage({ action: 'start', fps: profile.fps });
+        }
+
+        // Aplica o limite de bitrate
+        const bps = QUALITY_BITRATE_SETTINGS[qualityKey];
+        applyBitrateLimit(bps);
+        
+        showToast(`Qualidade alterada para ${qualityKey} em tempo real! ⚙️`);
+    }
 }
 
 selectStreamQuality.addEventListener('change', (e) => {
@@ -1025,7 +1065,6 @@ async function startStreaming(roomId) {
             btnStopStream.disabled = false;
             
             streamerRoomInput.disabled = true;
-            selectStreamQuality.disabled = true;
             document.getElementById('btn-back-to-menu').disabled = true;
 
             showToast("Transmissão com mixer OBS iniciada! 🚀");
@@ -1321,10 +1360,6 @@ btnTheaterMode.addEventListener('click', () => {
     } else {
         btnTheaterMode.textContent = "🎭 Modo Teatro";
     }
-});
-
-selectStreamQuality.addEventListener('change', (e) => {
-    applyQualitySettings(e.target.value);
 });
 
 viewerVideo.addEventListener('timeupdate', () => {
