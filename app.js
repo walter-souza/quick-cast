@@ -480,6 +480,7 @@ function moveSourceZ(direction) {
 
 // --- RENDERIZAÇÃO DO COMPOSER CANVAS EM LOOP ---
 let isRendering = false;
+let renderWorker = null;
 
 function startRenderLoop() {
     if (isRendering) return;
@@ -510,11 +511,45 @@ function startRenderLoop() {
                 drawSelectionBorder(src);
             }
         }
-        
-        requestAnimationFrame(draw);
     }
     
-    requestAnimationFrame(draw);
+    const profile = getSelectedQualityProfile();
+    const fps = profile.fps || 30;
+    
+    try {
+        const blob = new Blob([
+            `let intervalId = null;
+            self.onmessage = function(e) {
+                if (e.data.action === 'start') {
+                    if (intervalId) clearInterval(intervalId);
+                    intervalId = setInterval(function() {
+                        self.postMessage('tick');
+                    }, 1000 / e.data.fps);
+                } else if (e.data.action === 'stop') {
+                    if (intervalId) {
+                        clearInterval(intervalId);
+                        intervalId = null;
+                    }
+                }
+            };`
+        ], { type: 'application/javascript' });
+        
+        renderWorker = new Worker(URL.createObjectURL(blob));
+        renderWorker.onmessage = (e) => {
+            if (e.data === 'tick') {
+                draw();
+            }
+        };
+        renderWorker.postMessage({ action: 'start', fps: fps });
+    } catch (err) {
+        console.warn("Falha ao inicializar Web Worker ticker, usando fallback requestAnimationFrame:", err);
+        function loop() {
+            if (!isRendering) return;
+            draw();
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    }
 }
 
 const HANDLE_SIZE = 10;
@@ -1066,6 +1101,12 @@ function stopStreaming() {
     if (vuInterval) {
         clearInterval(vuInterval);
         vuInterval = null;
+    }
+    
+    if (renderWorker) {
+        renderWorker.postMessage({ action: 'stop' });
+        renderWorker.terminate();
+        renderWorker = null;
     }
     isRendering = false;
     
