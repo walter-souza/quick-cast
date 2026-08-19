@@ -613,13 +613,34 @@ function getHandles(src) {
 function drawSelectionBorder(src) {
     previewCtx.strokeStyle = '#8b5cf6';
     previewCtx.lineWidth = 3;
-    previewCtx.strokeRect(src.x, src.y, src.width, src.height);
+    
+    // Escala dos limites do composer (ex: 1920x1080) para o preview (1280x720)
+    const scaleX = previewCanvas.width / composerCanvas.width;
+    const scaleY = previewCanvas.height / composerCanvas.height;
+    
+    const x = src.x * scaleX;
+    const y = src.y * scaleY;
+    const w = src.width * scaleX;
+    const h = src.height * scaleY;
+    
+    previewCtx.strokeRect(x, y, w, h);
     
     previewCtx.fillStyle = '#ffffff';
     previewCtx.strokeStyle = '#8b5cf6';
     previewCtx.lineWidth = 2;
     
-    const handles = getHandles(src);
+    // Calcula as alças no espaço do preview
+    const handles = {
+        nw: { x: x, y: y },
+        n:  { x: x + w/2, y: y },
+        ne: { x: x + w, y: y },
+        e:  { x: x + w, y: y + h/2 },
+        se: { x: x + w, y: y + h },
+        s:  { x: x + w/2, y: y + h },
+        sw: { x: x, y: y + h },
+        w:  { x: x, y: y + h/2 }
+    };
+    
     for (const key in handles) {
         const pt = handles[key];
         previewCtx.fillRect(pt.x - HANDLE_SIZE/2, pt.y - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
@@ -729,20 +750,27 @@ previewCanvas.addEventListener('mousedown', (e) => {
     if (!scene) return;
     
     const rect = previewCanvas.getBoundingClientRect();
-    const scaleX = previewCanvas.width / rect.width;
-    const scaleY = previewCanvas.height / rect.height;
-    const mX = (e.clientX - rect.left) * scaleX;
-    const mY = (e.clientY - rect.top) * scaleY;
+    const scaleX_preview = previewCanvas.width / rect.width;
+    const scaleY_preview = previewCanvas.height / rect.height;
+    const mX_preview = (e.clientX - rect.left) * scaleX_preview;
+    const mY_preview = (e.clientY - rect.top) * scaleY_preview;
+    
+    // Mapeia para o espaço do composer
+    const mX = mX_preview * (composerCanvas.width / previewCanvas.width);
+    const mY = mY_preview * (composerCanvas.height / previewCanvas.height);
     
     // 1. Checa se clicou sobre uma alça (handle) do elemento selecionado
     if (selectedSourceId) {
         const src = scene.sources.find(s => s.id === selectedSourceId);
         if (src && src.visible) {
-            const handles = getHandles(src);
+            const handles = getHandles(src); // No espaço do composer
             for (const key in handles) {
                 const pt = handles[key];
-                if (mX >= pt.x - HANDLE_SIZE && mX <= pt.x + HANDLE_SIZE &&
-                    mY >= pt.y - HANDLE_SIZE && mY <= pt.y + HANDLE_SIZE) {
+                // O HANDLE_SIZE é ajustado para o espaço do composer para precisão do clique
+                const hitRangeX = HANDLE_SIZE * (composerCanvas.width / previewCanvas.width);
+                const hitRangeY = HANDLE_SIZE * (composerCanvas.height / previewCanvas.height);
+                if (mX >= pt.x - hitRangeX && mX <= pt.x + hitRangeX &&
+                    mY >= pt.y - hitRangeY && mY <= pt.y + hitRangeY) {
                     interactionMode = 'resize';
                     resizeHandle = key;
                     startMousePos = { x: mX, y: mY };
@@ -780,10 +808,14 @@ previewCanvas.addEventListener('mousemove', (e) => {
     if (!src) return;
     
     const rect = previewCanvas.getBoundingClientRect();
-    const scaleX = previewCanvas.width / rect.width;
-    const scaleY = previewCanvas.height / rect.height;
-    const mX = (e.clientX - rect.left) * scaleX;
-    const mY = (e.clientY - rect.top) * scaleY;
+    const scaleX_preview = previewCanvas.width / rect.width;
+    const scaleY_preview = previewCanvas.height / rect.height;
+    const mX_preview = (e.clientX - rect.left) * scaleX_preview;
+    const mY_preview = (e.clientY - rect.top) * scaleY_preview;
+    
+    // Mapeia para o espaço do composer
+    const mX = mX_preview * (composerCanvas.width / previewCanvas.width);
+    const mY = mY_preview * (composerCanvas.height / previewCanvas.height);
     
     const dx = mX - startMousePos.x;
     const dy = mY - startMousePos.y;
