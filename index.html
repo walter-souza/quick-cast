@@ -31,20 +31,6 @@
                     </div>
                 </div>
 
-                <!-- Formulário Streamer -->
-                <div id="streamer-form" class="form-group hidden mt-4">
-                    <label for="streamer-room-input">Código da Sala (apenas letras, números e traço):</label>
-                    <div class="input-row">
-                        <input type="text" id="streamer-room-input" placeholder="ex: minha-transmissao" autocomplete="off">
-                        <button id="btn-start-stream" class="btn">Iniciar Transmissão</button>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 8px; margin: 12px 0;">
-                        <input type="checkbox" id="chk-transmit-mic" checked style="width: 18px; height: 18px; cursor: pointer;">
-                        <label for="chk-transmit-mic" style="cursor: pointer; user-select: none; color: var(--text-muted);">Transmitir também meu Microfone (Voz)</label>
-                    </div>
-                    <button class="btn btn-secondary mt-4 btn-back">Voltar</button>
-                </div>
-
                 <!-- Formulário Viewer -->
                 <div id="viewer-form" class="form-group hidden mt-4">
                     <label for="viewer-room-input">Código da Sala do seu amigo:</label>
@@ -56,96 +42,117 @@
                 </div>
             </section>
 
-            <!-- 2. TELA DO STREAMER (TRANSMISSÃO ATIVA) -->
+            <!-- 2. TELA DO STREAMER (STUDIO & TRANSMISSÃO) -->
             <section id="streamer-section" class="section">
-                <div class="status-bar">
-                    <div class="status-left">
-                        <span id="streamer-status-badge" class="badge badge-offline">Offline</span>
-                        <span id="streamer-status-text">Iniciando...</span>
-                    </div>
-                    <div class="viewers-count">
-                        <span>Espectadores: <strong id="streamer-viewers-count">0</strong></span>
-                    </div>
-                </div>
-
-                <div class="share-box">
-                    <label>Compartilhe este link com seus amigos:</label>
-                    <div class="share-row">
-                        <input type="text" id="share-link-input" readonly>
-                        <button id="btn-copy-link" class="btn btn-secondary">Copiar Link</button>
-                    </div>
-                </div>
-
-                <div class="form-group" style="margin-bottom: 20px;">
-                    <label for="select-stream-quality">Qualidade da Transmissão (em tempo real):</label>
-                    <select id="select-stream-quality" style="padding: 12px 16px; background-color: var(--bg-color); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 8px; font-size: 1rem; width: 100%; cursor: pointer; outline: none;">
-                        <option value="720p" selected>720p (Fluido / Leve) - Recomendado</option>
-                        <option value="1080p">1080p (Nítido / Médio)</option>
-                        <option value="max">Original (Máxima Resolução / 60 FPS)</option>
-                    </select>
-                </div>
-
-                <div class="studio-layout">
-                    <!-- Preview Panel -->
-                    <div class="video-container">
-                        <!-- Canvas interativo onde o streamer arrasta e redimensiona -->
-                        <canvas id="preview-canvas" width="1280" height="720"></canvas>
-                        <!-- Canvas invisível que gera a stream de saída limpa -->
-                        <canvas id="composer-canvas" width="1280" height="720" style="display: none;"></canvas>
+                <div class="studio-layout-grid">
+                    <!-- Sidebar: Controles e Configurações de Transmissão -->
+                    <div class="studio-sidebar card">
+                        <h2>Transmissão</h2>
                         
-                        <div id="streamer-placeholder" class="video-placeholder">
-                            <p>Crie cenas e adicione fontes (Webcam, Tela, Janela) no painel abaixo para compor sua transmissão.</p>
+                        <div class="form-group">
+                            <label for="streamer-room-input">Código da Sala</label>
+                            <input type="text" id="streamer-room-input" placeholder="ex: sala-de-jogo" value="">
                         </div>
+
+                        <div class="form-group">
+                            <label for="select-stream-quality">Qualidade de Saída</label>
+                            <select id="select-stream-quality">
+                                <option value="720p" selected>720p / 30fps / 1.5 Mbps (Recomendado)</option>
+                                <option value="1080p">1080p / 30fps / 3.0 Mbps</option>
+                                <option value="max">Qualidade Máxima (Original / 60fps)</option>
+                            </select>
+                        </div>
+
+                        <div class="action-buttons-sidebar">
+                            <button id="btn-start-stream" class="btn btn-primary">Iniciar Transmissão</button>
+                            <button id="btn-stop-stream" class="btn btn-danger" disabled>Parar Transmissão</button>
+                        </div>
+
+                        <div class="stats-panel">
+                            <div class="stat-item">
+                                <span class="stat-label">Espectadores:</span>
+                                <span id="streamer-viewers-count" class="stat-value">0</span>
+                            </div>
+                        </div>
+
+                        <div class="share-panel hidden" id="share-panel">
+                            <label>Link de Compartilhamento</label>
+                            <div class="share-input-group">
+                                <input type="text" id="share-link-input" readonly>
+                                <button id="btn-copy-link" class="btn btn-secondary">Copiar</button>
+                            </div>
+                        </div>
+
+                        <button id="btn-back-to-menu" class="btn btn-secondary mt-4">Voltar ao Menu</button>
                     </div>
 
-                    <!-- OBS Panels (Bottom) -->
-                    <div class="obs-panels">
-                        <!-- Scenes Panel -->
-                        <div class="obs-panel card" id="scenes-panel">
-                            <h3>Cenas</h3>
-                            <div class="panel-list" id="scenes-list">
-                                <!-- Inserido dinamicamente -->
-                            </div>
-                            <div class="panel-actions">
-                                <button id="btn-add-scene" class="btn-icon" title="Adicionar Cena">➕</button>
-                                <button id="btn-del-scene" class="btn-icon" title="Remover Cena">➖</button>
-                            </div>
-                        </div>
-
-                        <!-- Sources Panel -->
-                        <div class="obs-panel card" id="sources-panel">
-                            <h3>Fontes da Cena</h3>
-                            <div class="panel-list" id="sources-list">
-                                <!-- Inserido dinamicamente -->
-                            </div>
-                            <div class="panel-actions">
-                                <div class="dropdown-add-source">
-                                    <button id="btn-add-source-menu" class="btn-icon" title="Adicionar Fonte">➕</button>
-                                    <div class="dropdown-content" id="add-source-dropdown">
-                                        <button id="add-source-display">🖥️ Tela / Janela (Navegador)</button>
-                                        <button id="add-source-webcam">📷 Webcam / Câmera</button>
-                                    </div>
+                    <!-- Workspace: Preview + OBS Controls -->
+                    <div class="workspace">
+                        <!-- Preview Panel -->
+                        <div class="video-container-wrapper">
+                            <div class="preview-header">
+                                <h3>Visualização de Monitor (Preview)</h3>
+                                <div class="status-bar-simple">
+                                    <span id="streamer-status-badge" class="badge badge-offline">Offline</span>
+                                    <span id="streamer-status-text">Pronto</span>
                                 </div>
-                                <button id="btn-del-source" class="btn-icon" title="Remover Fonte">➖</button>
-                                <button id="btn-source-up" class="btn-icon" title="Trazer para Frente">▲</button>
-                                <button id="btn-source-down" class="btn-icon" title="Enviar para Trás">▼</button>
+                            </div>
+                            <div class="video-container">
+                                <!-- Canvas interativo onde o streamer arrasta e redimensiona -->
+                                <canvas id="preview-canvas" width="1280" height="720"></canvas>
+                                <!-- Canvas invisível que gera a stream de saída limpa -->
+                                <canvas id="composer-canvas" width="1280" height="720" style="display: none;"></canvas>
+                                
+                                <div id="streamer-placeholder" class="video-placeholder">
+                                    <p>Crie cenas e adicione fontes (Webcam, Tela Cheia, Janela) no painel abaixo para compor sua transmissão.</p>
+                                </div>
                             </div>
                         </div>
 
-                        <!-- Mixer Panel -->
-                        <div class="obs-panel card" id="mixer-panel">
-                            <h3>Mixer de Áudio</h3>
-                            <div class="mixer-list" id="mixer-list">
-                                <!-- Canais de áudio dinâmicos com faders e VU meters -->
+                        <!-- OBS Panels (Bottom) -->
+                        <div class="obs-panels">
+                            <!-- Scenes Panel -->
+                            <div class="obs-panel card" id="scenes-panel">
+                                <h3>Cenas</h3>
+                                <div class="panel-list" id="scenes-list">
+                                    <!-- Inserido dinamicamente -->
+                                </div>
+                                <div class="panel-actions">
+                                    <button id="btn-add-scene" class="btn-icon" title="Adicionar Cena">➕</button>
+                                    <button id="btn-del-scene" class="btn-icon" title="Remover Cena">➖</button>
+                                </div>
+                            </div>
+
+                            <!-- Sources Panel -->
+                            <div class="obs-panel card" id="sources-panel">
+                                <h3>Fontes da Cena</h3>
+                                <div class="panel-list" id="sources-list">
+                                    <!-- Inserido dinamicamente -->
+                                </div>
+                                <div class="panel-actions">
+                                    <div class="dropdown-add-source">
+                                        <button id="btn-add-source-menu" class="btn-icon" title="Adicionar Fonte">➕</button>
+                                        <div class="dropdown-content" id="add-source-dropdown">
+                                            <button id="add-source-display">🖥️ Tela / Janela (Navegador)</button>
+                                            <button id="add-source-webcam">📷 Webcam / Câmera</button>
+                                        </div>
+                                    </div>
+                                    <button id="btn-del-source" class="btn-icon" title="Remover Fonte">➖</button>
+                                    <button id="btn-source-up" class="btn-icon" title="Trazer para Frente">▲</button>
+                                    <button id="btn-source-down" class="btn-icon" title="Enviar para Trás">▼</button>
+                                </div>
+                            </div>
+
+                            <!-- Mixer Panel -->
+                            <div class="obs-panel card" id="mixer-panel">
+                                <h3>Mixer de Áudio</h3>
+                                <div class="mixer-list" id="mixer-list">
+                                    <!-- Canais de áudio dinâmicos com faders e VU meters -->
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
-
-                <div class="actions-row">
-                    <button id="btn-stop-stream" class="btn btn-danger">Parar Transmissão</button>
-                </div>
-            </section>
 
             <!-- 3. TELA DO VIEWER (ASSISTIR AO VIVO) -->
             <section id="viewer-section" class="section">

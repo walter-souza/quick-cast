@@ -68,19 +68,17 @@ function showSection(section) {
 // Configura volta para a tela inicial
 btnBackElements.forEach(btn => {
     btn.addEventListener('click', () => {
-        streamerForm.classList.add('hidden');
         viewerForm.classList.add('hidden');
         selectStreamer.parentNode.classList.remove('hidden');
     });
 });
 
-// Seleção do Card Streamer
+// Seleção do Card Streamer (Estúdio OBS)
 selectStreamer.addEventListener('click', () => {
-    selectStreamer.parentNode.classList.add('hidden');
-    streamerForm.classList.remove('hidden');
+    showSection(streamerSection);
     // Sugere um código aleatório simples
     streamerRoomInput.value = Math.random().toString(36).substring(2, 8);
-    streamerRoomInput.focus();
+    setTimeout(initOBSStudio, 150);
 });
 
 // Seleção do Card Viewer
@@ -957,7 +955,6 @@ async function startStreaming(roomId) {
         peer = new Peer(peerId);
 
         peer.on('open', (id) => {
-            showSection(streamerSection);
             streamerStatusBadge.className = "badge badge-live";
             streamerStatusBadge.textContent = "LIVE";
             streamerStatusText.textContent = `Transmitindo sala: ${cleanRoomId}`;
@@ -965,6 +962,16 @@ async function startStreaming(roomId) {
             const shareUrl = `${window.location.origin}${window.location.pathname}?room=${cleanRoomId}`;
             shareLinkInput.value = shareUrl;
             
+            document.getElementById('share-panel').classList.remove('hidden');
+            
+            btnStartStream.disabled = true;
+            btnStartStream.textContent = "Iniciar Transmissão";
+            btnStopStream.disabled = false;
+            
+            streamerRoomInput.disabled = true;
+            selectStreamQuality.disabled = true;
+            document.getElementById('btn-back-to-menu').disabled = true;
+
             showToast("Transmissão com mixer OBS iniciada! 🚀");
             activeConnections.clear();
             updateViewerCount();
@@ -1047,9 +1054,17 @@ function stopStreaming() {
 function resetStreamerUI() {
     btnStartStream.disabled = false;
     btnStartStream.textContent = "Iniciar Transmissão";
+    btnStopStream.disabled = true;
+    
+    streamerRoomInput.disabled = false;
+    selectStreamQuality.disabled = false;
+    document.getElementById('btn-back-to-menu').disabled = false;
+    
+    document.getElementById('share-panel').classList.add('hidden');
+    
     streamerStatusBadge.className = "badge badge-offline";
     streamerStatusBadge.textContent = "Offline";
-    streamerStatusText.textContent = "Iniciando...";
+    streamerStatusText.textContent = "Pronto";
     streamerViewersCount.textContent = "0";
     shareLinkInput.value = "";
     showPlaceholder();
@@ -1064,6 +1079,10 @@ btnStartStream.addEventListener('click', () => {
 });
 
 btnStopStream.addEventListener('click', stopStreaming);
+
+document.getElementById('btn-back-to-menu').addEventListener('click', () => {
+    stopStreaming();
+});
 
 selectStreamer.addEventListener('click', () => {
     setTimeout(initOBSStudio, 150);
