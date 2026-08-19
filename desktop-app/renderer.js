@@ -19,6 +19,14 @@ function escapeHTML(str) {
     );
 }
 
+// Função para gerar ID de sala seguro e puramente alfanumérico (compatibilidade máxima com sinalização)
+function generateSecureRoomId() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    const array = new Uint8Array(16);
+    crypto.getRandomValues(array);
+    return Array.from(array, b => chars[b % chars.length]).join('');
+}
+
 // --- ESTADO DO STUDIO (SCENES E SOURCES) ---
 let scenes = [
     {
@@ -1058,7 +1066,7 @@ btnCopy.addEventListener('click', () => {
 
 // --- INICIALIZAÇÃO DO STUDIO ---
 window.addEventListener('DOMContentLoaded', () => {
-    roomInput.value = crypto.randomUUID();
+    roomInput.value = generateSecureRoomId();
     
     const profile = getSelectedQualityProfile();
     bitrateValueSpan.textContent = `${profile.bitrate} Kbps`;

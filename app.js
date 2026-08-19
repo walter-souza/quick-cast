@@ -20,6 +20,14 @@ function escapeHTML(str) {
     );
 }
 
+// Função para gerar ID de sala seguro e puramente alfanumérico (compatibilidade máxima com sinalização)
+function generateSecureRoomId() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    const array = new Uint8Array(16);
+    crypto.getRandomValues(array);
+    return Array.from(array, b => chars[b % chars.length]).join('');
+}
+
 // Referências de Elementos do DOM
 const setupSection = document.getElementById('setup-section');
 const streamerSection = document.getElementById('streamer-section');
@@ -90,7 +98,7 @@ btnBackElements.forEach(btn => {
 // Seleção do Card Streamer (Estúdio OBS)
 selectStreamer.addEventListener('click', () => {
     showSection(streamerSection);
-    streamerRoomInput.value = crypto.randomUUID();
+    streamerRoomInput.value = generateSecureRoomId();
     setTimeout(initOBSStudio, 150);
 });
 
