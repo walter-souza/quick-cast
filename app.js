@@ -1193,6 +1193,11 @@ function connectToStream(roomId) {
         call.answer(); // Responde sem enviar stream próprio
 
         call.on('stream', (remoteStream) => {
+            // Evita reatribuir e interromper o play() se o stream já for o mesmo
+            if (viewerVideo.srcObject && viewerVideo.srcObject.id === remoteStream.id) {
+                return;
+            }
+
             viewerStatusText.textContent = "Assistindo ao vivo";
             viewerVideo.srcObject = remoteStream;
             
