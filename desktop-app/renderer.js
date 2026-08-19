@@ -5,6 +5,20 @@ let localStream = null;
 const activeConnections = new Set(); // { conn }
 const activeCalls = new Set(); // { call }
 
+// Função para sanitizar HTML (prevenção de XSS)
+function escapeHTML(str) {
+    if (!str) return '';
+    return str.replace(/[&<>'"]/g, 
+        tag => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            "'": '&#39;',
+            '"': '&quot;'
+        }[tag] || tag)
+    );
+}
+
 // --- ESTADO DO STUDIO (SCENES E SOURCES) ---
 let scenes = [
     {
@@ -190,7 +204,7 @@ function renderSources() {
         item.innerHTML = `
             <div class="item-meta">
                 <input type="checkbox" id="chk-vis-${src.id}" ${src.visible ? 'checked' : ''}>
-                <span>${typeIcon} ${src.name}</span>
+                <span>${typeIcon} ${escapeHTML(src.name)}</span>
             </div>
         `;
         
@@ -228,7 +242,7 @@ function renderMixer() {
         
         channel.innerHTML = `
             <div class="channel-header">
-                <span>${typeIcon} ${src.name}</span>
+                <span>${typeIcon} ${escapeHTML(src.name)}</span>
                 <span id="vol-lbl-${src.id}">${Math.round(src.volume * 100)}%</span>
             </div>
             <div class="channel-controls">
@@ -340,7 +354,7 @@ async function openSourcePicker(type) {
             item.className = 'picker-item';
             item.innerHTML = `
                 <span>${type === 'screen' ? '🖥️' : '🪟'}</span>
-                <span>${src.name}</span>
+                <span>${escapeHTML(src.name)}</span>
             `;
             item.addEventListener('click', () => {
                 sourcePickerModal.classList.add('hidden');
@@ -883,6 +897,13 @@ async function startStreaming() {
         });
         
         peer.on('connection', (conn) => {
+            if (activeConnections.size >= 5) {
+                conn.on('open', () => {
+                    conn.close();
+                });
+                showToast("Conexão recusada: limite de 5 espectadores atingido.");
+                return;
+            }
             activeConnections.add(conn);
             updateViewerCount();
             
@@ -1037,7 +1058,7 @@ btnCopy.addEventListener('click', () => {
 
 // --- INICIALIZAÇÃO DO STUDIO ---
 window.addEventListener('DOMContentLoaded', () => {
-    roomInput.value = Math.random().toString(36).substring(2, 8);
+    roomInput.value = crypto.randomUUID();
     
     const profile = getSelectedQualityProfile();
     bitrateValueSpan.textContent = `${profile.bitrate} Kbps`;
