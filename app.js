@@ -28,6 +28,15 @@ function generateSecureRoomId() {
     return Array.from(array, b => chars[b % chars.length]).join('');
 }
 
+// Função para calcular dimensões mantendo a proporção (aspect ratio) da fonte
+function fitAspect(srcWidth, srcHeight, maxWidth, maxHeight) {
+    const ratio = Math.min(maxWidth / srcWidth, maxHeight / srcHeight);
+    return {
+        width: Math.round(srcWidth * ratio),
+        height: Math.round(srcHeight * ratio)
+    };
+}
+
 // Referências de Elementos do DOM
 const setupSection = document.getElementById('setup-section');
 const streamerSection = document.getElementById('streamer-section');
@@ -356,6 +365,13 @@ async function addWebcamSource() {
         source.videoElement.playsInline = true;
         await source.videoElement.play();
         
+        // Ajusta dimensões baseado na proporção real da câmera
+        const vWidth = source.videoElement.videoWidth || 640;
+        const vHeight = source.videoElement.videoHeight || 480;
+        const dims = fitAspect(vWidth, vHeight, composerCanvas.width / 4, composerCanvas.height / 4);
+        source.width = dims.width;
+        source.height = dims.height;
+        
         setupAudioNode(source);
         
         activeScene().sources.push(source);
@@ -407,6 +423,15 @@ async function addDisplaySource() {
         source.videoElement.muted = true;
         source.videoElement.playsInline = true;
         await source.videoElement.play();
+        
+        // Ajusta dimensões baseado na proporção real da tela
+        const vWidth = source.videoElement.videoWidth || 1280;
+        const vHeight = source.videoElement.videoHeight || 720;
+        const dims = fitAspect(vWidth, vHeight, composerCanvas.width, composerCanvas.height);
+        source.width = dims.width;
+        source.height = dims.height;
+        source.x = Math.round((composerCanvas.width - dims.width) / 2);
+        source.y = Math.round((composerCanvas.height - dims.height) / 2);
         
         stream.getVideoTracks()[0].onended = () => {
             selectedSourceId = sourceId;
@@ -789,27 +814,61 @@ function initMouseEvents() {
             const sW = startSourceRect.w;
             const sH = startSourceRect.h;
             
+            const aspect = sW / sH;
+            
             switch (resizeHandle) {
-                case 'se':
-                    src.width = Math.max(20, sW + dx);
-                    src.height = Math.max(20, sH + dy);
+                case 'se': {
+                    let newW = Math.max(20, sW + dx);
+                    let newH = Math.max(20, sH + dy);
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        newH = newW / aspect;
+                    } else {
+                        newW = newH * aspect;
+                    }
+                    src.width = Math.round(newW);
+                    src.height = Math.round(newH);
                     break;
-                case 'sw':
-                    src.x = Math.min(sX + dx, sX + sW - 20);
-                    src.width = sW + (sX - src.x);
-                    src.height = Math.max(20, sH + dy);
+                }
+                case 'sw': {
+                    let newW_val = Math.max(20, sW - dx);
+                    let newH_val = Math.max(20, sH + dy);
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        newH_val = newW_val / aspect;
+                    } else {
+                        newW_val = newH_val * aspect;
+                    }
+                    src.width = Math.round(newW_val);
+                    src.height = Math.round(newH_val);
+                    src.x = sX + (sW - src.width);
                     break;
-                case 'ne':
-                    src.y = Math.min(sY + dy, sY + sH - 20);
-                    src.width = Math.max(20, sW + dx);
-                    src.height = sH + (sY - src.y);
+                }
+                case 'ne': {
+                    let newW_val = Math.max(20, sW + dx);
+                    let newH_val = Math.max(20, sH - dy);
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        newH_val = newW_val / aspect;
+                    } else {
+                        newW_val = newH_val * aspect;
+                    }
+                    src.width = Math.round(newW_val);
+                    src.height = Math.round(newH_val);
+                    src.y = sY + (sH - src.height);
                     break;
-                case 'nw':
-                    src.x = Math.min(sX + dx, sX + sW - 20);
-                    src.y = Math.min(sY + dy, sY + sH - 20);
-                    src.width = sW + (sX - src.x);
-                    src.height = sH + (sY - src.y);
+                }
+                case 'nw': {
+                    let newW_val = Math.max(20, sW - dx);
+                    let newH_val = Math.max(20, sH - dy);
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        newH_val = newW_val / aspect;
+                    } else {
+                        newW_val = newH_val * aspect;
+                    }
+                    src.width = Math.round(newW_val);
+                    src.height = Math.round(newH_val);
+                    src.x = sX + (sW - src.width);
+                    src.y = sY + (sH - src.height);
                     break;
+                }
                 case 'e':
                     src.width = Math.max(20, sW + dx);
                     break;
