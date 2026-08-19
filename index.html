@@ -85,13 +85,61 @@
                     </select>
                 </div>
 
-                <div class="video-container">
-                    <div id="streamer-placeholder" class="video-placeholder">
-                        <p>Compartilhando Tela</p>
-                        <small class="subtitle">Seus amigos estão assistindo ao vivo</small>
+                <div class="studio-layout">
+                    <!-- Preview Panel -->
+                    <div class="video-container">
+                        <!-- Canvas interativo onde o streamer arrasta e redimensiona -->
+                        <canvas id="preview-canvas" width="1280" height="720"></canvas>
+                        <!-- Canvas invisível que gera a stream de saída limpa -->
+                        <canvas id="composer-canvas" width="1280" height="720" style="display: none;"></canvas>
+                        
+                        <div id="streamer-placeholder" class="video-placeholder">
+                            <p>Crie cenas e adicione fontes (Webcam, Tela, Janela) no painel abaixo para compor sua transmissão.</p>
+                        </div>
                     </div>
-                    <!-- muted para evitar feedback de áudio local se o próprio streamer escutar -->
-                    <video id="streamer-preview" autoplay playsinline muted></video>
+
+                    <!-- OBS Panels (Bottom) -->
+                    <div class="obs-panels">
+                        <!-- Scenes Panel -->
+                        <div class="obs-panel card" id="scenes-panel">
+                            <h3>Cenas</h3>
+                            <div class="panel-list" id="scenes-list">
+                                <!-- Inserido dinamicamente -->
+                            </div>
+                            <div class="panel-actions">
+                                <button id="btn-add-scene" class="btn-icon" title="Adicionar Cena">➕</button>
+                                <button id="btn-del-scene" class="btn-icon" title="Remover Cena">➖</button>
+                            </div>
+                        </div>
+
+                        <!-- Sources Panel -->
+                        <div class="obs-panel card" id="sources-panel">
+                            <h3>Fontes da Cena</h3>
+                            <div class="panel-list" id="sources-list">
+                                <!-- Inserido dinamicamente -->
+                            </div>
+                            <div class="panel-actions">
+                                <div class="dropdown-add-source">
+                                    <button id="btn-add-source-menu" class="btn-icon" title="Adicionar Fonte">➕</button>
+                                    <div class="dropdown-content" id="add-source-dropdown">
+                                        <button id="add-source-display">🖥️ Tela / Janela (Navegador)</button>
+                                        <button id="add-source-webcam">📷 Webcam / Câmera</button>
+                                    </div>
+                                </div>
+                                <button id="btn-del-source" class="btn-icon" title="Remover Fonte">➖</button>
+                                <button id="btn-source-up" class="btn-icon" title="Trazer para Frente">▲</button>
+                                <button id="btn-source-down" class="btn-icon" title="Enviar para Trás">▼</button>
+                            </div>
+                        </div>
+
+                        <!-- Mixer Panel -->
+                        <div class="obs-panel card" id="mixer-panel">
+                            <h3>Mixer de Áudio</h3>
+                            <div class="mixer-list" id="mixer-list">
+                                <!-- Canais de áudio dinâmicos com faders e VU meters -->
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="actions-row">
@@ -123,6 +171,13 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- Menu de Contexto do Canvas (Botão Direito) -->
+    <div id="canvas-context-menu" class="context-menu hidden">
+        <button id="menu-reset-size">Redefinir tamanho</button>
+        <button id="menu-fit-screen">Ajustar para a tela</button>
+        <button id="menu-stretch-screen">Esticar para a tela</button>
     </div>
 
     <!-- Toast Notification -->

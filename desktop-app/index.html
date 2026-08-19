@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamShare Desktop - OBS Studio Edition</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- PeerJS CDN -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <span class="icon">🎬</span>
+                <h1>StreamShare Studio</h1>
+            </div>
+            <div class="status-container">
+                <span id="status-badge" class="badge badge-offline">Offline</span>
+                <span id="status-text">Pronto para transmitir</span>
+            </div>
+        </header>
+
+        <main class="grid-layout">
+            <!-- Sidebar: Controls & Settings -->
+            <section class="controls-panel card">
+                <h2>Transmissão</h2>
+                
+                <div class="form-group">
+                    <label for="room-input">Código da Sala</label>
+                    <input type="text" id="room-input" placeholder="ex: sala-de-jogo" value="">
+                </div>
+
+                <div class="form-group">
+                    <label for="quality-select">Qualidade de Saída</label>
+                    <select id="quality-select">
+                        <option value="720p">720p / 30fps / 1.5 Mbps (Recomendado)</option>
+                        <option value="1080p">1080p / 30fps / 3.0 Mbps</option>
+                        <option value="max">Qualidade Máxima (Original / 60fps)</option>
+                    </select>
+                </div>
+
+                <div class="action-buttons">
+                    <button id="btn-start" class="btn btn-primary">Iniciar Transmissão</button>
+                    <button id="btn-stop" class="btn btn-danger" disabled>Parar Transmissão</button>
+                </div>
+
+                <div class="stats-panel">
+                    <div class="stat-item">
+                        <span class="stat-label">Espectadores:</span>
+                        <span id="viewer-count" class="stat-value">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Bitrate Alvo:</span>
+                        <span id="bitrate-value" class="stat-value">1500 Kbps</span>
+                    </div>
+                </div>
+
+                <div class="share-panel hidden" id="share-panel">
+                    <label>Link de Compartilhamento</label>
+                    <div class="share-input-group">
+                        <input type="text" id="share-url" readonly>
+                        <button id="btn-copy" class="btn btn-secondary">Copiar</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Workspace: Preview + OBS Controls -->
+            <div class="workspace">
+                <!-- Preview Panel -->
+                <section class="preview-panel card">
+                    <div class="card-header">
+                        <h2>Visualização de Monitor (Preview)</h2>
+                    </div>
+                    <div class="video-container">
+                        <!-- Canvas interativo onde o streamer arrasta e redimensiona -->
+                        <canvas id="preview-canvas" width="1280" height="720"></canvas>
+                        <!-- Canvas invisível que gera a stream de saída limpa -->
+                        <canvas id="composer-canvas" width="1280" height="720" style="display: none;"></canvas>
+                        
+                        <div id="preview-placeholder" class="preview-placeholder">
+                            <span class="placeholder-icon">📺</span>
+                            <p>Crie cenas e adicione fontes (Webcam, Tela, Janela) no painel abaixo para compor sua transmissão.</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- OBS Panels (Bottom) -->
+                <div class="obs-panels">
+                    <!-- Scenes Panel -->
+                    <div class="obs-panel card" id="scenes-panel">
+                        <h3>Cenas</h3>
+                        <div class="panel-list" id="scenes-list">
+                            <!-- Inserido dinamicamente -->
+                        </div>
+                        <div class="panel-actions">
+                            <button id="btn-add-scene" class="btn-icon" title="Adicionar Cena">➕</button>
+                            <button id="btn-del-scene" class="btn-icon" title="Remover Cena">➖</button>
+                        </div>
+                    </div>
+
+                    <!-- Sources Panel -->
+                    <div class="obs-panel card" id="sources-panel">
+                        <h3>Fontes da Cena</h3>
+                        <div class="panel-list" id="sources-list">
+                            <!-- Inserido dinamicamente -->
+                        </div>
+                        <div class="panel-actions">
+                            <div class="dropdown-add-source">
+                                <button id="btn-add-source-menu" class="btn-icon" title="Adicionar Fonte">➕</button>
+                                <div class="dropdown-content" id="add-source-dropdown">
+                                    <button id="add-source-screen">🖥️ Compartilhamento de Tela</button>
+                                    <button id="add-source-window">🪟 Janela Específica</button>
+                                    <button id="add-source-webcam">📷 Webcam / Câmera</button>
+                                </div>
+                            </div>
+                            <button id="btn-del-source" class="btn-icon" title="Remover Fonte">➖</button>
+                            <button id="btn-source-up" class="btn-icon" title="Trazer para Frente">▲</button>
+                            <button id="btn-source-down" class="btn-icon" title="Enviar para Trás">▼</button>
+                        </div>
+                    </div>
+
+                    <!-- Mixer Panel -->
+                    <div class="obs-panel card" id="mixer-panel">
+                        <h3>Mixer de Áudio</h3>
+                        <div class="mixer-list" id="mixer-list">
+                            <!-- Canais de áudio dinâmicos com faders e VU meters -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal para selecionar Tela/Janela (Picker) -->
+    <div id="source-picker-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3 id="picker-modal-title">Selecionar Fonte</h3>
+            <div class="picker-list" id="picker-sources-list">
+                <!-- Lista de telas/janelas obtidas do ipcMain -->
+            </div>
+            <div class="modal-buttons">
+                <button id="btn-cancel-picker" class="btn btn-secondary">Cancelar</button>
+            </div>
+        </div>
+    </div>
+    <!-- Menu de Contexto do Canvas (Botão Direito) -->
+    <div id="canvas-context-menu" class="context-menu hidden">
+        <button id="menu-reset-size">Redefinir tamanho</button>
+        <button id="menu-fit-screen">Ajustar para a tela</button>
+        <button id="menu-stretch-screen">Esticar para a tela</button>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

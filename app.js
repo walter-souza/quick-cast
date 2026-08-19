@@ -2,8 +2,6 @@
 const PEER_PREFIX = "streamshare-room-"; // Prefixo para evitar conflito de IDs globais no PeerJS Cloud
 let peer = null;
 let localStream = null;
-let screenStream = null;
-let micStream = null;
 let activeConnections = new Set(); // Para o Streamer rastrear viewers ativos
 let streamWatchdogInterval = null;
 let lastDataReceivedTime = 0;
@@ -20,15 +18,12 @@ const viewerForm = document.getElementById('viewer-form');
 
 const streamerRoomInput = document.getElementById('streamer-room-input');
 const btnStartStream = document.getElementById('btn-start-stream');
-const chkTransmitMic = document.getElementById('chk-transmit-mic');
 const btnStopStream = document.getElementById('btn-stop-stream');
 const streamerStatusBadge = document.getElementById('streamer-status-badge');
 const streamerStatusText = document.getElementById('streamer-status-text');
 const streamerViewersCount = document.getElementById('streamer-viewers-count');
 const shareLinkInput = document.getElementById('share-link-input');
 const btnCopyLink = document.getElementById('btn-copy-link');
-const streamerPreview = document.getElementById('streamer-preview');
-const streamerPlaceholder = document.getElementById('streamer-placeholder');
 const selectStreamQuality = document.getElementById('select-stream-quality');
 
 const viewerRoomInput = document.getElementById('viewer-room-input');
@@ -60,6 +55,14 @@ function showToast(message) {
 function showSection(section) {
     [setupSection, streamerSection, viewerSection].forEach(s => s.classList.remove('active'));
     section.classList.add('active');
+    
+    // Ajusta o tamanho do container se estiver transmitindo com o mixer
+    const container = document.querySelector('.container');
+    if (section === streamerSection) {
+        container.classList.add('studio-mode');
+    } else {
+        container.classList.remove('studio-mode');
+    }
 }
 
 // Configura volta para a tela inicial
@@ -96,100 +99,688 @@ btnCopyLink.addEventListener('click', () => {
         .catch(() => showToast("Erro ao copiar link."));
 });
 
-
-// --- LÓGICA DO STREAMER ---
-
-// Função auxiliar para mixar faixas de áudio da tela (sistema) e do microfone
-function mixAudioTracks(screenStream, micStream) {
-    const hasScreenAudio = screenStream && screenStream.getAudioTracks().length > 0;
-    const hasMicAudio = micStream && micStream.getAudioTracks().length > 0;
-
-    if (!hasScreenAudio && !hasMicAudio) {
-        return null;
+// --- ESTADO DO STUDIO WEB (SCENES E SOURCES) ---
+let scenes = [
+    {
+        id: 'scene-default',
+        name: 'Cena 1',
+        sources: []
     }
+];
+let activeSceneId = 'scene-default';
+let selectedSourceId = null;
 
-    // Se apenas um tem áudio, retorna a faixa dele diretamente (sem precisar de AudioContext)
-    if (hasScreenAudio && !hasMicAudio) {
-        return screenStream.getAudioTracks()[0];
-    }
-    if (!hasScreenAudio && hasMicAudio) {
-        return micStream.getAudioTracks()[0];
-    }
+// Canvases
+let previewCanvas = null;
+let previewCtx = null;
+let composerCanvas = null;
+let composerCtx = null;
 
-    // Se ambos têm áudio, usamos o AudioContext para mesclá-los
-    try {
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        const audioCtx = new AudioContextClass();
-        const destNode = audioCtx.createMediaStreamDestination();
+// Mixer de áudio
+let audioContext = null;
+let audioDestination = null;
 
-        // Fonte 1: Áudio do Sistema (tela)
-        const screenSource = audioCtx.createMediaStreamSource(screenStream);
-        screenSource.connect(destNode);
-
-        // Fonte 2: Áudio do Microfone
-        const micSource = audioCtx.createMediaStreamSource(micStream);
-        micSource.connect(destNode);
-
-        // Retorna a faixa resultante mixada
-        return destNode.stream.getAudioTracks()[0];
-    } catch (e) {
-        console.error("Erro ao inicializar AudioContext para mixagem:", e);
-        // Fallback: retorna o áudio da tela
-        return screenStream.getAudioTracks()[0];
-    }
-}
-
-// Definições de qualidade suportadas
-const QUALITY_SETTINGS = {
-    '720p': {
-        width: 1280,
-        height: 720,
-        frameRate: 30,
-        bitrate: 1500000 // 1.5 Mbps
-    },
-    '1080p': {
-        width: 1920,
-        height: 1080,
-        frameRate: 30,
-        bitrate: 3000000 // 3.0 Mbps
-    },
-    'max': {
-        width: null, // sem limite (resolução nativa)
-        height: null,
-        frameRate: 60,
-        bitrate: null // sem limite (automático do WebRTC)
-    }
+// Configuração de qualidade
+const QUALITY_PROFILES = {
+    '720p': { width: 1280, height: 720, fps: 30, bitrate: 1500 },
+    '1080p': { width: 1920, height: 1080, fps: 30, bitrate: 3000 },
+    'max': { width: 1920, height: 1080, fps: 60, bitrate: 6000 }
 };
 
-// Aplica configurações de vídeo (resolução, FPS) e bitrate em tempo real
-async function applyQualitySettings(qualityKey) {
-    if (!screenStream || !localStream) return;
-
-    const settings = QUALITY_SETTINGS[qualityKey];
-    const videoTrack = screenStream.getVideoTracks()[0];
-
-    if (videoTrack) {
-        // 1. Aplica novos limites de resolução e framerate no track da tela
-        const constraints = {
-            width: settings.width ? { max: settings.width, ideal: settings.width } : undefined,
-            height: settings.height ? { max: settings.height, ideal: settings.height } : undefined,
-            frameRate: settings.frameRate ? { max: settings.frameRate, ideal: settings.frameRate } : undefined
-        };
-
-        try {
-            await videoTrack.applyConstraints(constraints);
-            console.log(`Constraints aplicadas para ${qualityKey}:`, constraints);
-        } catch (err) {
-            console.error("Erro ao aplicar constraints de vídeo:", err);
-            showToast("Não foi possível ajustar a resolução da tela.");
-        }
-    }
-
-    // 2. Aplica limites de bitrate em todas as conexões de viewers ativos
-    applyBitrateLimit(settings.bitrate);
+function getSelectedQualityProfile() {
+    const key = selectStreamQuality.value;
+    return QUALITY_PROFILES[key] || QUALITY_PROFILES['720p'];
 }
 
-// Varre todos os viewers ativos e limita a banda de vídeo
+function initAudioContext() {
+    if (!audioContext) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        audioContext = new AudioContextClass();
+        audioDestination = audioContext.createMediaStreamDestination();
+    }
+    if (audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
+}
+
+function setupAudioNode(source) {
+    if (!source.stream || source.stream.getAudioTracks().length === 0) return;
+    
+    initAudioContext();
+    
+    try {
+        const audioSourceNode = audioContext.createMediaStreamSource(source.stream);
+        const gainNode = audioContext.createGain();
+        const analyserNode = audioContext.createAnalyser();
+        
+        analyserNode.fftSize = 256;
+        gainNode.gain.value = source.volume;
+        
+        audioSourceNode.connect(gainNode);
+        gainNode.connect(analyserNode);
+        analyserNode.connect(audioDestination);
+        
+        source.audioSourceNode = audioSourceNode;
+        source.gainNode = gainNode;
+        source.analyserNode = analyserNode;
+    } catch (e) {
+        console.error("Erro ao inicializar nó de áudio no Mixer Web:", e);
+    }
+}
+
+function activeScene() {
+    return scenes.find(s => s.id === activeSceneId);
+}
+
+function showPlaceholder() {
+    document.getElementById('streamer-placeholder').classList.remove('hidden');
+}
+
+function hidePlaceholder() {
+    document.getElementById('streamer-placeholder').classList.add('hidden');
+}
+
+function renderScenes() {
+    const list = document.getElementById('scenes-list');
+    if (!list) return;
+    list.innerHTML = '';
+    
+    scenes.forEach(scene => {
+        const item = document.createElement('div');
+        item.className = `panel-item ${scene.id === activeSceneId ? 'selected' : ''}`;
+        item.innerHTML = `<span>🎬 ${scene.name}</span>`;
+        item.addEventListener('click', () => {
+            activeSceneId = scene.id;
+            selectedSourceId = null;
+            renderScenes();
+            renderSources();
+            renderMixer();
+            if (scene.sources.length === 0) {
+                showPlaceholder();
+            } else {
+                hidePlaceholder();
+            }
+        });
+        list.appendChild(item);
+    });
+}
+
+function renderSources() {
+    const list = document.getElementById('sources-list');
+    if (!list) return;
+    list.innerHTML = '';
+    
+    const scene = activeScene();
+    if (!scene) return;
+    
+    const sortedSources = [...scene.sources].sort((a, b) => b.zIndex - a.zIndex);
+    
+    sortedSources.forEach(src => {
+        const item = document.createElement('div');
+        item.className = `panel-item ${src.id === selectedSourceId ? 'selected' : ''}`;
+        
+        let typeIcon = '🖥️';
+        if (src.type === 'webcam') typeIcon = '📷';
+        
+        item.innerHTML = `
+            <div class="item-meta">
+                <input type="checkbox" id="chk-vis-${src.id}" ${src.visible ? 'checked' : ''}>
+                <span>${typeIcon} ${src.name}</span>
+            </div>
+        `;
+        
+        item.addEventListener('click', (e) => {
+            if (e.target.type !== 'checkbox') {
+                selectedSourceId = src.id;
+                renderSources();
+            }
+        });
+        
+        const chk = item.querySelector(`#chk-vis-${src.id}`);
+        chk.addEventListener('change', (e) => {
+            src.visible = e.target.checked;
+        });
+        
+        list.appendChild(item);
+    });
+}
+
+function renderMixer() {
+    const list = document.getElementById('mixer-list');
+    if (!list) return;
+    list.innerHTML = '';
+    
+    const scene = activeScene();
+    if (!scene) return;
+    
+    scene.sources.forEach(src => {
+        if (!src.stream || src.stream.getAudioTracks().length === 0) return;
+        
+        const channel = document.createElement('div');
+        channel.className = 'mixer-channel';
+        
+        let typeIcon = '🎙️';
+        if (src.type === 'screen') typeIcon = '🔊';
+        
+        channel.innerHTML = `
+            <div class="channel-header">
+                <span>${typeIcon} ${src.name}</span>
+                <span id="vol-lbl-${src.id}">${Math.round(src.volume * 100)}%</span>
+            </div>
+            <div class="channel-controls">
+                <button class="btn-mute" id="btn-mute-${src.id}">${src.muted ? '🔇' : '🔊'}</button>
+                <input type="range" class="channel-fader" id="fader-${src.id}" min="0" max="1" step="0.05" value="${src.muted ? 0 : src.volume}">
+            </div>
+            <div class="vu-container">
+                <div class="vu-bar" id="vu-bar-${src.id}"></div>
+            </div>
+        `;
+        
+        const fader = channel.querySelector(`#fader-${src.id}`);
+        fader.addEventListener('input', (e) => {
+            const vol = parseFloat(e.target.value);
+            src.volume = vol;
+            src.muted = false;
+            channel.querySelector(`#btn-mute-${src.id}`).textContent = '🔊';
+            channel.querySelector(`#vol-lbl-${src.id}`).textContent = `${Math.round(vol * 100)}%`;
+            if (src.gainNode) {
+                src.gainNode.gain.value = vol;
+            }
+        });
+        
+        const btnMute = channel.querySelector(`#btn-mute-${src.id}`);
+        btnMute.addEventListener('click', () => {
+            src.muted = !src.muted;
+            btnMute.textContent = src.muted ? '🔇' : '🔊';
+            const targetVol = src.muted ? 0 : src.volume;
+            fader.value = targetVol;
+            if (src.gainNode) {
+                src.gainNode.gain.value = targetVol;
+            }
+        });
+        
+        list.appendChild(channel);
+    });
+}
+
+// --- CAPTURA DE FONTES NO WEB CLIENT ---
+async function addWebcamSource() {
+    try {
+        initAudioContext();
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        } catch (e) {
+            console.warn("Sem acesso ao microfone da Webcam, usando apenas vídeo.", e);
+            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+        
+        const sourceId = 'source-' + Math.random().toString(36).substr(2, 9);
+        const source = {
+            id: sourceId,
+            name: `Webcam ${activeScene().sources.length + 1}`,
+            type: 'webcam',
+            stream: stream,
+            videoElement: document.createElement('video'),
+            x: 50,
+            y: 50,
+            width: 320,
+            height: 240,
+            zIndex: activeScene().sources.length + 1,
+            visible: true,
+            muted: false,
+            volume: 0.8
+        };
+        
+        source.videoElement.srcObject = stream;
+        source.videoElement.muted = true;
+        source.videoElement.playsInline = true;
+        await source.videoElement.play();
+        
+        setupAudioNode(source);
+        
+        activeScene().sources.push(source);
+        selectedSourceId = sourceId;
+        renderSources();
+        renderMixer();
+        showToast("Webcam adicionada com sucesso!");
+        hidePlaceholder();
+    } catch (err) {
+        console.error("Erro ao adicionar webcam:", err);
+        showToast("Falha ao abrir webcam: " + err.message);
+    }
+}
+
+async function addDisplaySource() {
+    const profile = getSelectedQualityProfile();
+    try {
+        initAudioContext();
+        
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: {
+                frameRate: { ideal: profile.fps, max: 60 }
+            },
+            audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+            }
+        });
+        
+        const sourceId = 'source-' + Math.random().toString(36).substr(2, 9);
+        const source = {
+            id: sourceId,
+            name: `Tela/Janela ${activeScene().sources.length + 1}`,
+            type: 'screen',
+            stream: stream,
+            videoElement: document.createElement('video'),
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720,
+            zIndex: activeScene().sources.length + 1,
+            visible: true,
+            muted: false,
+            volume: 0.8
+        };
+        
+        source.videoElement.srcObject = stream;
+        source.videoElement.muted = true;
+        source.videoElement.playsInline = true;
+        await source.videoElement.play();
+        
+        stream.getVideoTracks()[0].onended = () => {
+            selectedSourceId = sourceId;
+            deleteActiveSource();
+            showToast("Compartilhamento de tela finalizado.");
+        };
+        
+        setupAudioNode(source);
+        
+        activeScene().sources.push(source);
+        selectedSourceId = sourceId;
+        renderSources();
+        renderMixer();
+        showToast("Fonte de tela adicionada com sucesso!");
+        hidePlaceholder();
+    } catch (err) {
+        console.error("Erro ao capturar display:", err);
+        showToast("Cancelado ou falha ao iniciar captura de tela.");
+    }
+}
+
+function deleteActiveSource() {
+    if (!selectedSourceId) {
+        showToast("Nenhuma fonte selecionada.");
+        return;
+    }
+    const scene = activeScene();
+    const idx = scene.sources.findIndex(s => s.id === selectedSourceId);
+    if (idx === -1) return;
+    
+    const src = scene.sources[idx];
+    if (src.stream) {
+        src.stream.getTracks().forEach(t => t.stop());
+    }
+    if (src.audioSourceNode) src.audioSourceNode.disconnect();
+    if (src.gainNode) src.gainNode.disconnect();
+    
+    scene.sources.splice(idx, 1);
+    selectedSourceId = null;
+    
+    renderSources();
+    renderMixer();
+    
+    if (scene.sources.length === 0) {
+        showPlaceholder();
+    }
+}
+
+function moveSourceZ(direction) {
+    if (!selectedSourceId) return;
+    const scene = activeScene();
+    
+    const sorted = [...scene.sources].sort((a, b) => a.zIndex - b.zIndex);
+    const idx = sorted.findIndex(s => s.id === selectedSourceId);
+    const src = scene.sources.find(s => s.id === selectedSourceId);
+    
+    if (direction === 'up' && idx < sorted.length - 1) {
+        const next = sorted[idx + 1];
+        const temp = src.zIndex;
+        src.zIndex = next.zIndex;
+        next.zIndex = temp;
+    } else if (direction === 'down' && idx > 0) {
+        const prev = sorted[idx - 1];
+        const temp = src.zIndex;
+        src.zIndex = prev.zIndex;
+        prev.zIndex = temp;
+    }
+    
+    renderSources();
+}
+
+// --- RENDERIZAÇÃO DO COMPOSER CANVAS EM LOOP ---
+let isRendering = false;
+
+function startRenderLoop() {
+    if (isRendering) return;
+    isRendering = true;
+    
+    function draw() {
+        if (!isRendering) return;
+        
+        composerCtx.fillStyle = '#000000';
+        composerCtx.fillRect(0, 0, composerCanvas.width, composerCanvas.height);
+        
+        const scene = activeScene();
+        if (scene) {
+            const sortedSources = [...scene.sources].sort((a, b) => a.zIndex - b.zIndex);
+            sortedSources.forEach(src => {
+                if (src.visible && src.videoElement && src.videoElement.readyState >= 2) {
+                    composerCtx.drawImage(src.videoElement, src.x, src.y, src.width, src.height);
+                }
+            });
+        }
+        
+        previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+        previewCtx.drawImage(composerCanvas, 0, 0, previewCanvas.width, previewCanvas.height);
+        
+        if (scene && selectedSourceId) {
+            const src = scene.sources.find(s => s.id === selectedSourceId);
+            if (src && src.visible) {
+                drawSelectionBorder(src);
+            }
+        }
+        
+        requestAnimationFrame(draw);
+    }
+    
+    requestAnimationFrame(draw);
+}
+
+const HANDLE_SIZE = 10;
+
+function getHandles(src) {
+    const x = src.x;
+    const y = src.y;
+    const w = src.width;
+    const h = src.height;
+    
+    return {
+        nw: { x: x, y: y },
+        n:  { x: x + w/2, y: y },
+        ne: { x: x + w, y: y },
+        e:  { x: x + w, y: y + h/2 },
+        se: { x: x + w, y: y + h },
+        s:  { x: x + w/2, y: y + h },
+        sw: { x: x, y: y + h },
+        w:  { x: x, y: y + h/2 }
+    };
+}
+
+function drawSelectionBorder(src) {
+    previewCtx.strokeStyle = '#3b82f6';
+    previewCtx.lineWidth = 3;
+    previewCtx.strokeRect(src.x, src.y, src.width, src.height);
+    
+    previewCtx.fillStyle = '#ffffff';
+    previewCtx.strokeStyle = '#3b82f6';
+    previewCtx.lineWidth = 2;
+    
+    const handles = getHandles(src);
+    for (const key in handles) {
+        const pt = handles[key];
+        previewCtx.fillRect(pt.x - HANDLE_SIZE/2, pt.y - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
+        previewCtx.strokeRect(pt.x - HANDLE_SIZE/2, pt.y - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
+    }
+}
+
+// --- DRAG & RESIZE CANVAS ---
+let interactionMode = null;
+let resizeHandle = null;
+let startMousePos = { x: 0, y: 0 };
+let startSourceRect = { x: 0, y: 0, w: 0, h: 0 };
+
+function initMouseEvents() {
+    const canvasContextMenu = document.getElementById('canvas-context-menu');
+
+    previewCanvas.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const scene = activeScene();
+        if (!scene) return;
+        
+        const rect = previewCanvas.getBoundingClientRect();
+        const scaleX = previewCanvas.width / rect.width;
+        const scaleY = previewCanvas.height / rect.height;
+        const mX = (e.clientX - rect.left) * scaleX;
+        const mY = (e.clientY - rect.top) * scaleY;
+        
+        // Procura qual fonte foi clicada com o botão direito (do topo para o fundo)
+        const sortedSources = [...scene.sources].sort((a, b) => b.zIndex - a.zIndex);
+        let clickedSource = null;
+        for (const src of sortedSources) {
+            if (src.visible && mX >= src.x && mX <= src.x + src.width &&
+                mY >= src.y && mY <= src.y + src.height) {
+                clickedSource = src;
+                break;
+            }
+        }
+        
+        if (clickedSource) {
+            selectedSourceId = clickedSource.id;
+            renderSources();
+            
+            // Exibe o menu na posição fixa do clique
+            canvasContextMenu.style.left = `${e.clientX}px`;
+            canvasContextMenu.style.top = `${e.clientY}px`;
+            canvasContextMenu.classList.remove('hidden');
+        } else {
+            canvasContextMenu.classList.add('hidden');
+        }
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!canvasContextMenu.contains(e.target)) {
+            canvasContextMenu.classList.add('hidden');
+        }
+    });
+
+    document.getElementById('menu-reset-size').addEventListener('click', () => {
+        canvasContextMenu.classList.add('hidden');
+        if (!selectedSourceId) return;
+        const scene = activeScene();
+        const src = scene.sources.find(s => s.id === selectedSourceId);
+        if (src && src.videoElement) {
+            const nw = src.videoElement.videoWidth || 320;
+            const nh = src.videoElement.videoHeight || 240;
+            src.width = nw;
+            src.height = nh;
+        }
+    });
+
+    document.getElementById('menu-fit-screen').addEventListener('click', () => {
+        canvasContextMenu.classList.add('hidden');
+        if (!selectedSourceId) return;
+        const scene = activeScene();
+        const src = scene.sources.find(s => s.id === selectedSourceId);
+        if (src && src.videoElement) {
+            const nw = src.videoElement.videoWidth || src.width;
+            const nh = src.videoElement.videoHeight || src.height;
+            const scaleX = 1280 / nw;
+            const scaleY = 720 / nh;
+            const scale = Math.min(scaleX, scaleY);
+            
+            const newW = nw * scale;
+            const newH = nh * scale;
+            src.x = (1280 - newW) / 2;
+            src.y = (720 - newH) / 2;
+            src.width = newW;
+            src.height = newH;
+        }
+    });
+
+    document.getElementById('menu-stretch-screen').addEventListener('click', () => {
+        canvasContextMenu.classList.add('hidden');
+        if (!selectedSourceId) return;
+        const scene = activeScene();
+        const src = scene.sources.find(s => s.id === selectedSourceId);
+        if (src) {
+            src.x = 0;
+            src.y = 0;
+            src.width = 1280;
+            src.height = 720;
+        }
+    });
+
+    previewCanvas.addEventListener('mousedown', (e) => {
+        const scene = activeScene();
+        if (!scene) return;
+        
+        const rect = previewCanvas.getBoundingClientRect();
+        const scaleX = previewCanvas.width / rect.width;
+        const scaleY = previewCanvas.height / rect.height;
+        const mX = (e.clientX - rect.left) * scaleX;
+        const mY = (e.clientY - rect.top) * scaleY;
+        
+        if (selectedSourceId) {
+            const src = scene.sources.find(s => s.id === selectedSourceId);
+            if (src && src.visible) {
+                const handles = getHandles(src);
+                for (const key in handles) {
+                    const pt = handles[key];
+                    if (mX >= pt.x - HANDLE_SIZE && mX <= pt.x + HANDLE_SIZE &&
+                        mY >= pt.y - HANDLE_SIZE && mY <= pt.y + HANDLE_SIZE) {
+                        interactionMode = 'resize';
+                        resizeHandle = key;
+                        startMousePos = { x: mX, y: mY };
+                        startSourceRect = { x: src.x, y: src.y, w: src.width, h: src.height };
+                        return;
+                    }
+                }
+            }
+        }
+        
+        const sortedSources = [...scene.sources].sort((a, b) => b.zIndex - a.zIndex);
+        for (const src of sortedSources) {
+            if (src.visible && mX >= src.x && mX <= src.x + src.width &&
+                mY >= src.y && mY <= src.y + src.height) {
+                selectedSourceId = src.id;
+                interactionMode = 'drag';
+                startMousePos = { x: mX, y: mY };
+                startSourceRect = { x: src.x, y: src.y, w: src.width, h: src.height };
+                renderSources();
+                return;
+            }
+        }
+        
+        selectedSourceId = null;
+        renderSources();
+    });
+
+    previewCanvas.addEventListener('mousemove', (e) => {
+        if (!interactionMode || !selectedSourceId) return;
+        
+        const scene = activeScene();
+        if (!scene) return;
+        const src = scene.sources.find(s => s.id === selectedSourceId);
+        if (!src) return;
+        
+        const rect = previewCanvas.getBoundingClientRect();
+        const scaleX = previewCanvas.width / rect.width;
+        const scaleY = previewCanvas.height / rect.height;
+        const mX = (e.clientX - rect.left) * scaleX;
+        const mY = (e.clientY - rect.top) * scaleY;
+        
+        const dx = mX - startMousePos.x;
+        const dy = mY - startMousePos.y;
+        
+        if (interactionMode === 'drag') {
+            src.x = startSourceRect.x + dx;
+            src.y = startSourceRect.y + dy;
+        } else if (interactionMode === 'resize') {
+            const sX = startSourceRect.x;
+            const sY = startSourceRect.y;
+            const sW = startSourceRect.w;
+            const sH = startSourceRect.h;
+            
+            switch (resizeHandle) {
+                case 'se':
+                    src.width = Math.max(20, sW + dx);
+                    src.height = Math.max(20, sH + dy);
+                    break;
+                case 'sw':
+                    src.x = Math.min(sX + dx, sX + sW - 20);
+                    src.width = sW + (sX - src.x);
+                    src.height = Math.max(20, sH + dy);
+                    break;
+                case 'ne':
+                    src.y = Math.min(sY + dy, sY + sH - 20);
+                    src.width = Math.max(20, sW + dx);
+                    src.height = sH + (sY - src.y);
+                    break;
+                case 'nw':
+                    src.x = Math.min(sX + dx, sX + sW - 20);
+                    src.y = Math.min(sY + dy, sY + sH - 20);
+                    src.width = sW + (sX - src.x);
+                    src.height = sH + (sY - src.y);
+                    break;
+                case 'e':
+                    src.width = Math.max(20, sW + dx);
+                    break;
+                case 'w':
+                    src.x = Math.min(sX + dx, sX + sW - 20);
+                    src.width = sW + (sX - src.x);
+                    break;
+                case 's':
+                    src.height = Math.max(20, sH + dy);
+                    break;
+                case 'n':
+                    src.y = Math.min(sY + dy, sY + sH - 20);
+                    src.height = sH + (sY - src.y);
+                    break;
+            }
+        }
+    });
+
+    window.addEventListener('mouseup', () => {
+        interactionMode = null;
+        resizeHandle = null;
+    });
+}
+
+// --- VU LOOP ---
+let vuInterval = null;
+
+function startVULoop() {
+    if (vuInterval) clearInterval(vuInterval);
+    
+    vuInterval = setInterval(() => {
+        const scene = activeScene();
+        if (!scene) return;
+        
+        scene.sources.forEach(src => {
+            const vuBar = document.getElementById(`vu-bar-${src.id}`);
+            if (!vuBar) return;
+            
+            if (src.analyserNode && src.visible && !src.muted) {
+                const array = new Uint8Array(src.analyserNode.frequencyBinCount);
+                src.analyserNode.getByteFrequencyData(array);
+                
+                let sum = 0;
+                for (let i = 0; i < array.length; i++) {
+                    sum += array[i];
+                }
+                const average = sum / array.length;
+                const percent = Math.min(100, Math.round((average / 110) * 100));
+                vuBar.style.width = `${percent}%`;
+            } else {
+                vuBar.style.width = '0%';
+            }
+        });
+    }, 50);
+}
+
+// --- BITRATE LIMITS ---
 function applyBitrateLimit(bitrateBps) {
     if (!peer) return;
 
@@ -221,85 +812,148 @@ function applyBitrateLimit(bitrateBps) {
     }
 }
 
+const QUALITY_BITRATE_SETTINGS = {
+    '720p': 1500000,
+    '1080p': 3000000,
+    'max': null
+};
+
+async function applyQualitySettings(qualityKey) {
+    if (!localStream) return;
+    const bps = QUALITY_BITRATE_SETTINGS[qualityKey];
+    applyBitrateLimit(bps);
+}
+
+selectStreamQuality.addEventListener('change', (e) => {
+    applyQualitySettings(e.target.value);
+});
+
+// --- RENDER INICIALIZAÇÃO OBS E BINDINGS ---
+function initOBSStudio() {
+    previewCanvas = document.getElementById('preview-canvas');
+    previewCtx = previewCanvas.getContext('2d');
+    composerCanvas = document.getElementById('composer-canvas');
+    composerCtx = composerCanvas.getContext('2d');
+    
+    const profile = getSelectedQualityProfile();
+    previewCanvas.width = 1280;
+    previewCanvas.height = 720;
+    composerCanvas.width = profile.width;
+    composerCanvas.height = profile.height;
+    
+    // Bind buttons
+    document.getElementById('btn-add-scene').onclick = () => {
+        const name = `Cena ${scenes.length + 1}`;
+        const id = 'scene-' + Date.now();
+        scenes.push({ id, name: name, sources: [] });
+        activeSceneId = id;
+        selectedSourceId = null;
+        renderScenes();
+        renderSources();
+        renderMixer();
+        showPlaceholder();
+    };
+    
+    document.getElementById('btn-del-scene').onclick = () => {
+        if (confirm("Deseja remover esta cena?")) {
+            if (scenes.length <= 1) {
+                showToast("Não é possível remover a única cena.");
+                return;
+            }
+            const idx = scenes.findIndex(s => s.id === activeSceneId);
+            scenes[idx].sources.forEach(src => {
+                if (src.stream) src.stream.getTracks().forEach(t => t.stop());
+                if (src.audioSourceNode) src.audioSourceNode.disconnect();
+                if (src.gainNode) src.gainNode.disconnect();
+            });
+            scenes.splice(idx, 1);
+            activeSceneId = scenes[0].id;
+            selectedSourceId = null;
+            renderScenes();
+            renderSources();
+            renderMixer();
+            if (activeScene().sources.length === 0) showPlaceholder();
+        }
+    };
+    
+    const addSourceMenuBtn = document.getElementById('btn-add-source-menu');
+    const addSourceDropdown = document.getElementById('add-source-dropdown');
+
+    addSourceMenuBtn.onclick = (e) => {
+        e.stopPropagation();
+        addSourceDropdown.classList.toggle('show');
+    };
+
+    document.addEventListener('click', (e) => {
+        if (!addSourceDropdown.contains(e.target) && e.target !== addSourceMenuBtn) {
+            addSourceDropdown.classList.remove('show');
+        }
+    });
+
+    document.getElementById('add-source-webcam').onclick = () => {
+        addSourceDropdown.classList.remove('show');
+        addWebcamSource();
+    };
+    document.getElementById('add-source-display').onclick = () => {
+        addSourceDropdown.classList.remove('show');
+        addDisplaySource();
+    };
+    
+    document.getElementById('btn-del-source').onclick = deleteActiveSource;
+    document.getElementById('btn-source-up').onclick = () => moveSourceZ('up');
+    document.getElementById('btn-source-down').onclick = () => moveSourceZ('down');
+    
+    initMouseEvents();
+    renderScenes();
+    renderSources();
+    renderMixer();
+    startRenderLoop();
+    startVULoop();
+    showPlaceholder();
+}
+
+// --- STREAMER FLOW INICIAR E PARAR ---
+
 async function startStreaming(roomId) {
     if (!roomId) {
         showToast("Por favor, digite ou gere um código de sala.");
         return;
     }
 
-    // Filtra caracteres inválidos
     const cleanRoomId = roomId.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
     if (!cleanRoomId) {
         showToast("Código inválido. Use apenas letras, números, hífen e sublinhado.");
         return;
     }
 
+    const scene = activeScene();
+    if (!scene || scene.sources.length === 0) {
+        showToast("Por favor, adicione pelo menos uma fonte de vídeo para transmitir.");
+        return;
+    }
+
     const peerId = PEER_PREFIX + cleanRoomId;
     btnStartStream.disabled = true;
-    btnStartStream.textContent = "Solicitando Mídia...";
+    btnStartStream.textContent = "Iniciando Mixer...";
 
     try {
-        // 1. Captura da tela e áudio do sistema
-        // Nota: áudio do sistema só funciona no Windows se o usuário marcar "Compartilhar áudio do sistema"
-        screenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: {
-                cursor: "always",
-                frameRate: { ideal: 30, max: 60 }
-            },
-            audio: {
-                echoCancellation: false,
-                noiseSuppression: false,
-                autoGainControl: false
-            }
-        });
-
-        // 2. Captura do microfone (se marcado e disponível)
-        if (chkTransmitMic && chkTransmitMic.checked) {
-            try {
-                micStream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    }
-                });
-            } catch (micErr) {
-                console.warn("Microfone não autorizado ou indisponível:", micErr);
-                showToast("Aviso: Microfone indisponível. Transmitindo apenas áudio do sistema.");
-            }
-        }
-
-        // 3. Monta o stream final combinado (vídeo + áudio mixado)
-        const tracks = [];
+        initAudioContext();
         
-        // Adiciona faixa de vídeo da tela
-        if (screenStream.getVideoTracks().length > 0) {
-            tracks.push(screenStream.getVideoTracks()[0]);
+        const profile = getSelectedQualityProfile();
+        composerCanvas.width = profile.width;
+        composerCanvas.height = profile.height;
+        
+        const canvasStream = composerCanvas.captureStream(profile.fps);
+        const tracks = [...canvasStream.getVideoTracks()];
+        
+        if (audioDestination && audioDestination.stream.getAudioTracks().length > 0) {
+            tracks.push(audioDestination.stream.getAudioTracks()[0]);
         }
-
-        // Mixa e adiciona áudio
-        const mixedAudioTrack = mixAudioTracks(screenStream, micStream);
-        if (mixedAudioTrack) {
-            tracks.push(mixedAudioTrack);
-        }
-
+        
         localStream = new MediaStream(tracks);
 
-        // Aplica as configurações iniciais de qualidade selecionadas no dropdown
-        const currentQuality = selectStreamQuality.value;
-        await applyQualitySettings(currentQuality);
+        await applyQualitySettings(selectStreamQuality.value);
 
-        // Ouvir quando o usuário clica no botão nativo "Parar Compartilhamento" do navegador
-        screenStream.getVideoTracks()[0].onended = () => {
-            stopStreaming();
-            showToast("Transmissão encerrada pelo navegador.");
-        };
-
-        // Exibe preview local (mutado para não dar eco)
-        streamerPreview.srcObject = localStream;
-        streamerPlaceholder.classList.add('hidden');
-
-        // 4. Inicializa conexão com o servidor de sinalização do PeerJS
         peer = new Peer(peerId);
 
         peer.on('open', (id) => {
@@ -308,32 +962,27 @@ async function startStreaming(roomId) {
             streamerStatusBadge.textContent = "LIVE";
             streamerStatusText.textContent = `Transmitindo sala: ${cleanRoomId}`;
             
-            // Gera link de compartilhamento
             const shareUrl = `${window.location.origin}${window.location.pathname}?room=${cleanRoomId}`;
             shareLinkInput.value = shareUrl;
             
-            showToast("Transmissão iniciada! Envie o link para os amigos. 🚀");
+            showToast("Transmissão com mixer OBS iniciada! 🚀");
             activeConnections.clear();
             updateViewerCount();
         });
 
-        // 5. Aguarda conexões de sinalização dos Viewers
         peer.on('connection', (conn) => {
             activeConnections.add(conn);
             updateViewerCount();
 
-            // Quando a conexão de dados abrir, ligamos (call) enviando o stream de vídeo
             conn.on('open', () => {
                 const call = peer.call(conn.peer, localStream);
                 
-                // Aplica o limite de bitrate da qualidade atual para esta conexão após a negociação
                 setTimeout(() => {
                     const currentQuality = selectStreamQuality.value;
-                    const settings = QUALITY_SETTINGS[currentQuality];
-                    applyBitrateLimit(settings.bitrate);
+                    const settings = QUALITY_PROFILES[currentQuality];
+                    applyBitrateLimit(settings.bitrate * 1000);
                 }, 1000);
 
-                // Trata desconexão do viewer
                 conn.on('close', () => {
                     activeConnections.delete(conn);
                     updateViewerCount();
@@ -341,7 +990,7 @@ async function startStreaming(roomId) {
             });
 
             conn.on('error', (err) => {
-                console.error("Erro na conexão com viewer:", err);
+                console.error("Erro na conexão com o viewer:", err);
                 activeConnections.delete(conn);
                 updateViewerCount();
             });
@@ -358,29 +1007,38 @@ async function startStreaming(roomId) {
         });
 
     } catch (err) {
-        console.error("Erro ao capturar tela:", err);
-        showToast("Permissão de tela negada ou erro ao iniciar captura.");
+        console.error("Erro ao iniciar mixer e sinalização:", err);
+        showToast("Erro ao iniciar mixer de vídeo/áudio.");
         stopStreaming();
     }
 }
 
 function stopStreaming() {
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localStream = null;
-    }
-    if (screenStream) {
-        screenStream.getTracks().forEach(track => track.stop());
-        screenStream = null;
-    }
-    if (micStream) {
-        micStream.getTracks().forEach(track => track.stop());
-        micStream = null;
-    }
     if (peer) {
         peer.destroy();
         peer = null;
     }
+    
+    scenes.forEach(s => {
+        s.sources.forEach(src => {
+            if (src.stream) src.stream.getTracks().forEach(t => t.stop());
+            if (src.audioSourceNode) src.audioSourceNode.disconnect();
+            if (src.gainNode) src.gainNode.disconnect();
+        });
+        s.sources = [];
+    });
+    
+    if (vuInterval) {
+        clearInterval(vuInterval);
+        vuInterval = null;
+    }
+    isRendering = false;
+    
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+    }
+    
     activeConnections.clear();
     resetStreamerUI();
     showSection(setupSection);
@@ -394,8 +1052,7 @@ function resetStreamerUI() {
     streamerStatusText.textContent = "Iniciando...";
     streamerViewersCount.textContent = "0";
     shareLinkInput.value = "";
-    streamerPreview.srcObject = null;
-    streamerPlaceholder.classList.remove('hidden');
+    showPlaceholder();
 }
 
 function updateViewerCount() {
@@ -408,6 +1065,9 @@ btnStartStream.addEventListener('click', () => {
 
 btnStopStream.addEventListener('click', stopStreaming);
 
+selectStreamer.addEventListener('click', () => {
+    setTimeout(initOBSStudio, 150);
+});
 
 // --- LÓGICA DO VIEWER ---
 

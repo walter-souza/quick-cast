@@ -1,0 +1,12 @@
+{
+  "name": "streamshare-desktop",
+  "version": "1.0.0",
+  "description": "StreamShare Desktop Streamer Client",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^30.0.0"
+  }
+}
