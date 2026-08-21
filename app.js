@@ -1506,12 +1506,15 @@ function connectToStream(roomId) {
     peer = new Peer();
 
     peer.on('open', () => {
+        console.log("Viewer: Peer do viewer aberto com ID:", peer.id);
         viewerStatusText.textContent = "Procurando Host...";
         
-        // Conecta ao canal de dados do Host
+        // Conecta ao canal de dados do Host e armazena a conexão
         const hostConn = peer.connect(streamerPeerId);
+        activeStreamerConnections.set(streamerPeerId, hostConn);
 
         hostConn.on('open', () => {
+            console.log("Viewer: Conexão de dados aberta com o Host:", streamerPeerId);
             viewerStatusBadge.className = "badge badge-live";
             viewerStatusBadge.textContent = "Conectado";
             viewerStatusText.textContent = "Conectado ao Host. Aguardando streams...";
@@ -1522,21 +1525,25 @@ function connectToStream(roomId) {
         });
 
         hostConn.on('data', (data) => {
+            console.log("Viewer: Recebeu mensagem do Host:", data);
             if (data && data.type === 'streamers-list') {
                 updateStreamersList(data.streamers);
             }
         });
 
         hostConn.on('close', () => {
+            console.log("Viewer: Conexão de dados com o Host fechada.");
             showToast("A conexão com o Host foi encerrada.");
             disconnectViewer();
         });
     });
 
     peer.on('call', (call) => {
+        console.log("Viewer: Recebendo chamada WebRTC de:", call.peer);
         call.answer(); // Responde sem enviar stream próprio
 
         call.on('stream', (remoteStream) => {
+            console.log("Viewer: Recebida stream WebRTC do peer:", call.peer, "Stream ID:", remoteStream.id);
             addRemoteStream(call.peer, remoteStream, call);
         });
     });
@@ -1553,11 +1560,13 @@ function connectToStream(roomId) {
 }
 
 function updateStreamersList(streamerIds) {
+    console.log("Viewer: Atualizando lista de streamers. IDs ativos na sala:", streamerIds);
     const currentSet = new Set(streamerIds);
 
     // 1. Desconecta de streamers antigos
     for (const [streamerId, conn] of activeStreamerConnections.entries()) {
         if (!currentSet.has(streamerId)) {
+            console.log("Viewer: Removendo streamer inativo:", streamerId);
             conn.close();
             activeStreamerConnections.delete(streamerId);
             removeRemoteStream(streamerId);
@@ -1567,20 +1576,23 @@ function updateStreamersList(streamerIds) {
     // 2. Conecta a novos streamers
     streamerIds.forEach(streamerId => {
         if (streamerId !== peer.id && !activeStreamerConnections.has(streamerId)) {
+            console.log("Viewer: Iniciando conexão de dados com co-streamer/host:", streamerId);
             const conn = peer.connect(streamerId);
             activeStreamerConnections.set(streamerId, conn);
 
             conn.on('open', () => {
+                console.log("Viewer: Conexão de dados aberta com streamer:", streamerId);
                 conn.send({ type: 'join-as-viewer' });
             });
 
             conn.on('close', () => {
+                console.log("Viewer: Conexão de dados com streamer fechada:", streamerId);
                 activeStreamerConnections.delete(streamerId);
                 removeRemoteStream(streamerId);
             });
 
             conn.on('error', (err) => {
-                console.error(`Erro ao conectar com co-streamer ${streamerId}:`, err);
+                console.error(`Viewer: Erro ao conectar com streamer ${streamerId}:`, err);
             });
         }
     });
