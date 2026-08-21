@@ -6,6 +6,14 @@ let activeConnections = new Set(); // Para o Streamer rastrear viewers ativos
 let streamWatchdogInterval = null;
 let lastDataReceivedTime = 0;
 
+// Estados para Multi-Streamer e Layouts Organizáveis
+let isCoStreamer = false;
+let hostConnection = null;
+let coStreamers = new Map(); // Para o Host: coStreamerId -> Connection
+let viewerConnections = new Set(); // Para o Host: Set de conexões de viewers
+let activeStreams = new Map(); // Para o Viewer: streamerPeerId -> { card, videoEl, stream, call }
+let activeStreamerConnections = new Map(); // Para o Viewer: streamerPeerId -> DataConnection
+
 // Função para sanitizar HTML (prevenção de XSS)
 function escapeHTML(str) {
     if (!str) return '';
@@ -63,7 +71,7 @@ const btnDisconnectViewer = document.getElementById('btn-disconnect-viewer');
 const btnTheaterMode = document.getElementById('btn-theater-mode');
 const viewerStatusBadge = document.getElementById('viewer-status-badge');
 const viewerStatusText = document.getElementById('viewer-status-text');
-const viewerVideo = document.getElementById('viewer-video');
+const viewerVideo = null; // Removido para usar multiplos elementos de vídeo dinâmicos
 const viewerPlaceholder = document.getElementById('viewer-placeholder');
 const viewerPlaceholderText = document.getElementById('viewer-placeholder-text');
 const btnUnmuteViewer = document.getElementById('btn-unmute-viewer');
@@ -1144,7 +1152,7 @@ async function startStreaming(roomId) {
         peer.on('open', (id) => {
             streamerStatusBadge.className = "badge badge-live";
             streamerStatusBadge.textContent = "LIVE";
-            streamerStatusText.textContent = `Transmitindo sala: ${cleanRoomId}`;
+            streamerStatusText.textContent = `Host da sala: ${cleanRoomId}`;
             
             const shareUrl = `${window.location.origin}${window.location.pathname}?room=${cleanRoomId}`;
             shareLinkInput.value = shareUrl;
@@ -1158,52 +1166,31 @@ async function startStreaming(roomId) {
             streamerRoomInput.disabled = true;
             document.getElementById('btn-back-to-menu').disabled = true;
 
-            showToast("Transmissão com mixer OBS iniciada! 🚀");
-            activeConnections.clear();
+            showToast("Transmissão com mixer OBS iniciada como Host! 🚀");
+            coStreamers.clear();
+            viewerConnections.clear();
             updateViewerCount();
         });
 
         peer.on('connection', (conn) => {
-            if (activeConnections.size >= 5) {
-                conn.on('open', () => {
-                    conn.close();
-                });
-                showToast("Conexão recusada: limite de 5 espectadores atingido.");
-                return;
-            }
-            activeConnections.add(conn);
-            updateViewerCount();
-
-            conn.on('open', () => {
-                const call = peer.call(conn.peer, localStream);
-                
-                setTimeout(() => {
-                    const currentQuality = selectStreamQuality.value;
-                    const settings = QUALITY_PROFILES[currentQuality];
-                    applyBitrateLimit(settings.bitrate * 1000);
-                }, 1000);
-
-                conn.on('close', () => {
-                    activeConnections.delete(conn);
-                    updateViewerCount();
-                });
-            });
-
-            conn.on('error', (err) => {
-                console.error("Erro na conexão com o viewer:", err);
-                activeConnections.delete(conn);
-                updateViewerCount();
+            conn.on('data', (data) => {
+                if (data && data.type === 'register-streamer') {
+                    registerCoStreamer(data.peerId, conn);
+                } else if (data && data.type === 'join-as-viewer') {
+                    registerViewer(conn);
+                }
             });
         });
 
         peer.on('error', (err) => {
             console.error("Erro no PeerJS do Streamer:", err);
             if (err.type === 'unavailable-id') {
-                showToast("Este código de sala já está ativo em outra transmissão. Escolha outro!");
+                // ID ocupado -> Entrar como Co-Streamer
+                switchToCoStreamer(cleanRoomId);
             } else {
                 showToast(`Erro de conexão: ${err.type}`);
+                stopStreaming();
             }
-            stopStreaming();
         });
 
     } catch (err) {
@@ -1211,6 +1198,146 @@ async function startStreaming(roomId) {
         showToast("Erro ao iniciar mixer de vídeo/áudio.");
         stopStreaming();
     }
+}
+
+// Funções auxiliares para o Host gerenciar a sala
+function registerCoStreamer(coStreamerId, conn) {
+    if (coStreamers.has(coStreamerId)) return;
+    
+    coStreamers.set(coStreamerId, conn);
+    showToast(`Co-streamer conectado! 🎥`);
+    
+    broadcastStreamersList();
+    
+    conn.on('close', () => {
+        coStreamers.delete(coStreamerId);
+        showToast("Co-streamer desconectado.");
+        broadcastStreamersList();
+    });
+    
+    conn.on('error', () => {
+        coStreamers.delete(coStreamerId);
+        broadcastStreamersList();
+    });
+}
+
+function registerViewer(conn) {
+    if (viewerConnections.has(conn)) return;
+    
+    if (viewerConnections.size >= 5) {
+        conn.close();
+        showToast("Conexão recusada: limite de 5 espectadores atingido.");
+        return;
+    }
+    
+    viewerConnections.add(conn);
+    updateViewerCount();
+    
+    // Envia a lista atual de streamers para o viewer
+    sendStreamersList(conn);
+    
+    // Liga para o viewer e envia a transmissão local (do Host)
+    const call = peer.call(conn.peer, localStream);
+    setTimeout(() => {
+        const currentQuality = selectStreamQuality.value;
+        const settings = QUALITY_PROFILES[currentQuality];
+        applyBitrateLimit(settings.bitrate * 1000);
+    }, 1000);
+    
+    conn.on('close', () => {
+        viewerConnections.delete(conn);
+        updateViewerCount();
+    });
+
+    conn.on('error', () => {
+        viewerConnections.delete(conn);
+        updateViewerCount();
+    });
+}
+
+function sendStreamersList(conn) {
+    if (!conn.open) return;
+    const list = [peer.id, ...coStreamers.keys()];
+    conn.send({
+        type: 'streamers-list',
+        streamers: list
+    });
+}
+
+function broadcastStreamersList() {
+    viewerConnections.forEach(conn => {
+        if (conn.open) {
+            sendStreamersList(conn);
+        }
+    });
+}
+
+// Inicializa a conexão como Co-Streamer se a sala já tiver um Host
+function switchToCoStreamer(cleanRoomId) {
+    isCoStreamer = true;
+    showToast("Entrando como Co-Streamer... 🎥");
+    
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+    
+    const coStreamerId = PEER_PREFIX + cleanRoomId + '-streamer-' + generateSecureRoomId();
+    peer = new Peer(coStreamerId);
+    
+    peer.on('open', (id) => {
+        streamerStatusBadge.className = "badge badge-live";
+        streamerStatusBadge.textContent = "CO-STREAM";
+        streamerStatusText.textContent = `Co-Streamer na sala: ${cleanRoomId}`;
+        
+        btnStartStream.disabled = true;
+        btnStartStream.textContent = "Transmitindo (Co-Streamer)";
+        btnStopStream.disabled = false;
+        
+        streamerRoomInput.disabled = true;
+        document.getElementById('btn-back-to-menu').disabled = true;
+
+        // Conecta ao Host principal
+        const hostPeerId = PEER_PREFIX + cleanRoomId;
+        hostConnection = peer.connect(hostPeerId);
+        
+        hostConnection.on('open', () => {
+            hostConnection.send({
+                type: 'register-streamer',
+                peerId: coStreamerId
+            });
+            showToast("Registrado no Host com sucesso!");
+        });
+
+        hostConnection.on('close', () => {
+            showToast("O Host encerrou a transmissão.");
+            stopStreaming();
+        });
+
+        hostConnection.on('error', (err) => {
+            console.error("Erro na conexão com o Host:", err);
+            stopStreaming();
+        });
+    });
+
+    peer.on('connection', (conn) => {
+        conn.on('data', (data) => {
+            if (data && data.type === 'join-as-viewer') {
+                const call = peer.call(conn.peer, localStream);
+                setTimeout(() => {
+                    const currentQuality = selectStreamQuality.value;
+                    const settings = QUALITY_PROFILES[currentQuality];
+                    applyBitrateLimit(settings.bitrate * 1000);
+                }, 1000);
+            }
+        });
+    });
+
+    peer.on('error', (err) => {
+        console.error("Erro no PeerJS do Co-Streamer:", err);
+        showToast(`Erro de Co-Streamer: ${err.type}`);
+        stopStreaming();
+    });
 }
 
 function stopStreaming() {
@@ -1244,6 +1371,18 @@ function stopStreaming() {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
     }
+    
+    isCoStreamer = false;
+    if (hostConnection) {
+        hostConnection.close();
+        hostConnection = null;
+    }
+    
+    coStreamers.forEach(conn => conn.close());
+    coStreamers.clear();
+    
+    viewerConnections.forEach(conn => conn.close());
+    viewerConnections.clear();
     
     activeConnections.clear();
     resetStreamerUI();
@@ -1290,6 +1429,10 @@ selectStreamer.addEventListener('click', () => {
 // --- LÓGICA DO VIEWER ---
 
 // Monitoramento de inatividade do stream (Watchdog)
+function getViewerVideos() {
+    return document.querySelectorAll('#viewer-streams-container video');
+}
+
 function startStreamWatchdog() {
     lastDataReceivedTime = Date.now();
     
@@ -1298,8 +1441,21 @@ function startStreamWatchdog() {
     }
 
     streamWatchdogInterval = setInterval(() => {
-        // Ignora a contagem se o próprio espectador pausou o player voluntariamente
-        if (viewerVideo.paused && viewerVideo.srcObject) {
+        const videos = getViewerVideos();
+        if (videos.length === 0) {
+            // Se ainda não conectamos a nenhum vídeo, valida timeout da conexão inicial
+            const secondsInactive = (Date.now() - lastDataReceivedTime) / 1000;
+            if (secondsInactive >= 30) {
+                console.warn("Nenhum dado de transmissão recebido por 30 segundos. Desconectando.");
+                showToast("Transmissão não pôde ser iniciada (tempo limite excedido).");
+                disconnectViewer();
+            }
+            return;
+        }
+
+        // Ignora a contagem se todos os players de vídeo estiverem pausados
+        const allPaused = Array.from(videos).every(v => v.paused);
+        if (allPaused) {
             lastDataReceivedTime = Date.now();
             return;
         }
@@ -1320,6 +1476,14 @@ function stopStreamWatchdog() {
     }
 }
 
+function setupVideoTimeupdate(video) {
+    video.addEventListener('timeupdate', () => {
+        if (video.currentTime > 0) {
+            lastDataReceivedTime = Date.now();
+        }
+    });
+}
+
 function connectToStream(roomId) {
     if (!roomId) {
         showToast("Código de sala inválido.");
@@ -1338,62 +1502,268 @@ function connectToStream(roomId) {
     viewerPlaceholderText.textContent = "Buscando transmissão...";
     btnUnmuteViewer.classList.add('hidden');
 
-    // Inicializa o Peer do Viewer (com ID aleatório gerado pelo servidor)
+    // Inicializa o Peer do Viewer (ID aleatório)
     peer = new Peer();
 
     peer.on('open', () => {
-        viewerStatusText.textContent = "Procurando streamer...";
-        // Conecta ao canal de dados do Streamer para avisar que está online
-        const conn = peer.connect(streamerPeerId);
+        viewerStatusText.textContent = "Procurando Host...";
+        
+        // Conecta ao canal de dados do Host
+        const hostConn = peer.connect(streamerPeerId);
 
-        conn.on('open', () => {
+        hostConn.on('open', () => {
             viewerStatusBadge.className = "badge badge-live";
             viewerStatusBadge.textContent = "Conectado";
-            viewerStatusText.textContent = "Conectado ao Streamer. Aguardando vídeo...";
-            viewerPlaceholderText.textContent = "Conexão estabelecida! Carregando transmissão...";
+            viewerStatusText.textContent = "Conectado ao Host. Aguardando streams...";
+            viewerPlaceholderText.textContent = "Conexão estabelecida! Carregando streams...";
+            
+            // Envia o sinalizador de que é um viewer
+            hostConn.send({ type: 'join-as-viewer' });
         });
 
-        conn.on('close', () => {
-            showToast("O streamer encerrou a transmissão.");
+        hostConn.on('data', (data) => {
+            if (data && data.type === 'streamers-list') {
+                updateStreamersList(data.streamers);
+            }
+        });
+
+        hostConn.on('close', () => {
+            showToast("A conexão com o Host foi encerrada.");
             disconnectViewer();
         });
     });
 
-    // Recebe a chamada (call) de vídeo do streamer
     peer.on('call', (call) => {
         call.answer(); // Responde sem enviar stream próprio
 
         call.on('stream', (remoteStream) => {
-            // Evita reatribuir e interromper o play() se o stream já for o mesmo
-            if (viewerVideo.srcObject && viewerVideo.srcObject.id === remoteStream.id) {
-                return;
-            }
-
-            viewerStatusText.textContent = "Assistindo ao vivo";
-            viewerVideo.srcObject = remoteStream;
-            
-            // Oculta o placeholder e tenta rodar o vídeo
-            viewerPlaceholder.classList.add('hidden');
-            
-            viewerVideo.play().catch(err => {
-                console.log("Autoplay bloqueado pelo navegador devido a áudio:", err);
-                // Se o autoplay falhar, exibe botão de clique do usuário
-                viewerPlaceholder.classList.remove('hidden');
-                viewerPlaceholderText.textContent = "A transmissão está pronta, mas o navegador bloqueou o som automático.";
-                btnUnmuteViewer.classList.remove('hidden');
-            });
+            addRemoteStream(call.peer, remoteStream, call);
         });
     });
 
     peer.on('error', (err) => {
         console.error("Erro no PeerJS do Viewer:", err);
         if (err.type === 'peer-unavailable') {
-            showToast("Sala não encontrada. Verifique se o código está correto e se o streamer está online.");
+            showToast("Sala não encontrada. Verifique se o código está correto e se o host está online.");
         } else {
             showToast(`Erro de conexão: ${err.type}`);
         }
         disconnectViewer();
     });
+}
+
+function updateStreamersList(streamerIds) {
+    const currentSet = new Set(streamerIds);
+
+    // 1. Desconecta de streamers antigos
+    for (const [streamerId, conn] of activeStreamerConnections.entries()) {
+        if (!currentSet.has(streamerId)) {
+            conn.close();
+            activeStreamerConnections.delete(streamerId);
+            removeRemoteStream(streamerId);
+        }
+    }
+
+    // 2. Conecta a novos streamers
+    streamerIds.forEach(streamerId => {
+        if (streamerId !== peer.id && !activeStreamerConnections.has(streamerId)) {
+            const conn = peer.connect(streamerId);
+            activeStreamerConnections.set(streamerId, conn);
+
+            conn.on('open', () => {
+                conn.send({ type: 'join-as-viewer' });
+            });
+
+            conn.on('close', () => {
+                activeStreamerConnections.delete(streamerId);
+                removeRemoteStream(streamerId);
+            });
+
+            conn.on('error', (err) => {
+                console.error(`Erro ao conectar com co-streamer ${streamerId}:`, err);
+            });
+        }
+    });
+}
+
+function addRemoteStream(streamerId, remoteStream, call) {
+    if (activeStreams.has(streamerId)) {
+        const record = activeStreams.get(streamerId);
+        if (record.videoEl.srcObject.id !== remoteStream.id) {
+            record.videoEl.srcObject = remoteStream;
+        }
+        return;
+    }
+
+    viewerPlaceholder.classList.add('hidden');
+
+    const card = document.createElement('div');
+    card.className = 'stream-card';
+    card.id = `stream-card-${streamerId}`;
+
+    // Posiciona em cascata inicial
+    const count = activeStreams.size;
+    const offsetLeft = 20 + (count * 40) % 300;
+    const offsetTop = 20 + (count * 40) % 200;
+    card.style.left = `${offsetLeft}px`;
+    card.style.top = `${offsetTop}px`;
+    card.style.width = '350px';
+    card.style.height = '230px';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'stream-header';
+    const cleanName = streamerId.replace(PEER_PREFIX, '');
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = cleanName.includes('-streamer-') ? `Co-Streamer` : `Host (${cleanName})`;
+    header.appendChild(nameSpan);
+
+    // Controles
+    const controls = document.createElement('div');
+    controls.className = 'stream-controls';
+
+    const btnMute = document.createElement('button');
+    btnMute.textContent = '🔊';
+    btnMute.title = 'Mudar Áudio';
+
+    const btnClose = document.createElement('button');
+    btnClose.textContent = '❌';
+    btnClose.title = 'Fechar';
+
+    controls.appendChild(btnMute);
+    controls.appendChild(btnClose);
+    header.appendChild(controls);
+    card.appendChild(header);
+
+    // Video
+    const videoEl = document.createElement('video');
+    videoEl.srcObject = remoteStream;
+    videoEl.autoplay = true;
+    videoEl.playsinline = true;
+    videoEl.controls = false;
+
+    card.appendChild(videoEl);
+
+    const container = document.getElementById('viewer-streams-container');
+    container.appendChild(card);
+
+    // Ativa drag nativo customizado
+    makeElementDraggable(card, header, container);
+
+    // Toggle de mute individual
+    btnMute.onclick = (e) => {
+        e.stopPropagation();
+        videoEl.muted = !videoEl.muted;
+        btnMute.textContent = videoEl.muted ? '🔇' : '🔊';
+    };
+
+    // Fechar stream manualmente
+    btnClose.onclick = (e) => {
+        e.stopPropagation();
+        call.close();
+        if (activeStreamerConnections.has(streamerId)) {
+            activeStreamerConnections.get(streamerId).close();
+            activeStreamerConnections.delete(streamerId);
+        }
+        removeRemoteStream(streamerId);
+    };
+
+    setupVideoTimeupdate(videoEl);
+
+    activeStreams.set(streamerId, { card, videoEl, stream: remoteStream, call });
+
+    videoEl.play().catch(err => {
+        console.log("Autoplay bloqueado pelo navegador:", err);
+        viewerPlaceholder.classList.remove('hidden');
+        viewerPlaceholderText.textContent = "Áudio bloqueado pelo navegador. Clique abaixo para iniciar as transmissões.";
+        btnUnmuteViewer.classList.remove('hidden');
+        videoEl.muted = true;
+        videoEl.play().catch(e => console.error(e));
+    });
+
+    updateViewerStatusText();
+}
+
+function removeRemoteStream(streamerId) {
+    if (!activeStreams.has(streamerId)) return;
+
+    const record = activeStreams.get(streamerId);
+    if (record.card.parentNode) {
+        record.card.parentNode.removeChild(record.card);
+    }
+
+    if (record.stream) {
+        record.stream.getTracks().forEach(t => t.stop());
+    }
+
+    activeStreams.delete(streamerId);
+    updateViewerStatusText();
+
+    if (activeStreams.size === 0) {
+        viewerPlaceholder.classList.remove('hidden');
+        viewerPlaceholderText.textContent = "Aguardando transmissão começar...";
+    }
+}
+
+function updateViewerStatusText() {
+    if (activeStreams.size > 0) {
+        viewerStatusBadge.className = "badge badge-live";
+        viewerStatusBadge.textContent = "LIVE";
+        viewerStatusText.textContent = `Assistindo ao vivo: ${activeStreams.size} stream(s)`;
+    } else {
+        viewerStatusBadge.className = "badge badge-offline";
+        viewerStatusBadge.textContent = "Desconectado";
+        viewerStatusText.textContent = "Procurando transmissões...";
+    }
+}
+
+function makeElementDraggable(card, header, container) {
+    let startX = 0, startY = 0;
+    let initialLeft = 0, initialTop = 0;
+
+    header.addEventListener('pointerdown', dragStart);
+
+    function dragStart(e) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+
+        startX = e.clientX;
+        startY = e.clientY;
+
+        initialLeft = card.offsetLeft;
+        initialTop = card.offsetTop;
+
+        const cards = container.querySelectorAll('.stream-card');
+        cards.forEach(c => c.style.zIndex = 10);
+        card.style.zIndex = 20;
+        card.classList.add('dragging');
+
+        document.addEventListener('pointermove', dragging);
+        document.addEventListener('pointerup', dragEnd);
+    }
+
+    function dragging(e) {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        let newLeft = initialLeft + dx;
+        let newTop = initialTop + dy;
+
+        const maxLeft = container.clientWidth - card.clientWidth;
+        const maxTop = container.clientHeight - card.clientHeight;
+
+        newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+        newTop = Math.max(0, Math.min(newTop, maxTop));
+
+        card.style.left = `${newLeft}px`;
+        card.style.top = `${newTop}px`;
+    }
+
+    function dragEnd() {
+        card.classList.remove('dragging');
+        document.removeEventListener('pointermove', dragging);
+        document.removeEventListener('pointerup', dragEnd);
+    }
 }
 
 function disconnectViewer() {
@@ -1402,7 +1772,13 @@ function disconnectViewer() {
         peer.destroy();
         peer = null;
     }
-    viewerVideo.srcObject = null;
+
+    const streamerIds = Array.from(activeStreams.keys());
+    streamerIds.forEach(id => removeRemoteStream(id));
+
+    activeStreamerConnections.forEach(conn => conn.close());
+    activeStreamerConnections.clear();
+
     document.body.classList.remove('theater-mode');
     if (btnTheaterMode) {
         btnTheaterMode.textContent = "🎭 Modo Teatro";
@@ -1418,23 +1794,31 @@ function resetViewerUI() {
     viewerPlaceholder.classList.remove('hidden');
     viewerPlaceholderText.textContent = "Aguardando transmissão começar...";
     btnUnmuteViewer.classList.add('hidden');
-    // Remove parâmetro ?room da URL para limpar o estado se o usuário voltar pro menu
+    
     if (window.location.search.includes('room=')) {
         window.history.pushState({}, document.title, window.location.pathname);
     }
 }
 
-// Trata o botão de desmutar caso o autoplay seja bloqueado
 btnUnmuteViewer.addEventListener('click', () => {
     lastDataReceivedTime = Date.now();
-    viewerVideo.muted = false;
-    viewerVideo.play()
+    const videos = getViewerVideos();
+    const playPromises = [];
+
+    videos.forEach(v => {
+        v.muted = false;
+        playPromises.push(v.play());
+    });
+
+    Promise.all(playPromises)
         .then(() => {
             viewerPlaceholder.classList.add('hidden');
             btnUnmuteViewer.classList.add('hidden');
         })
         .catch(err => {
-            showToast("Erro ao iniciar áudio: " + err.message);
+            console.error("Erro ao ativar áudio de todos:", err);
+            viewerPlaceholder.classList.add('hidden');
+            btnUnmuteViewer.classList.add('hidden');
         });
 });
 
@@ -1453,11 +1837,6 @@ btnTheaterMode.addEventListener('click', () => {
     }
 });
 
-viewerVideo.addEventListener('timeupdate', () => {
-    if (viewerVideo.currentTime > 0) {
-        lastDataReceivedTime = Date.now();
-    }
-});
 
 
 // --- AUTO-CONECTAR SE HOUVER PARÂMETRO NA URL ---
