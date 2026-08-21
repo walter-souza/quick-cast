@@ -1598,6 +1598,20 @@ function updateStreamersList(streamerIds) {
     });
 }
 
+function updateViewerLayout() {
+    const container = document.getElementById('viewer-streams-container');
+    if (!container) return;
+    
+    const videos = container.querySelectorAll('video');
+    if (activeStreams.size === 1) {
+        container.classList.add('single-stream');
+        videos.forEach(v => v.controls = true);
+    } else {
+        container.classList.remove('single-stream');
+        videos.forEach(v => v.controls = false);
+    }
+}
+
 function addRemoteStream(streamerId, remoteStream, call) {
     if (activeStreams.has(streamerId)) {
         const record = activeStreams.get(streamerId);
@@ -1693,6 +1707,7 @@ function addRemoteStream(streamerId, remoteStream, call) {
         videoEl.play().catch(e => console.error(e));
     });
 
+    updateViewerLayout();
     updateViewerStatusText();
 }
 
@@ -1709,6 +1724,7 @@ function removeRemoteStream(streamerId) {
     }
 
     activeStreams.delete(streamerId);
+    updateViewerLayout();
     updateViewerStatusText();
 
     if (activeStreams.size === 0) {

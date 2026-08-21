@@ -899,5 +899,27 @@ body.theater-mode #viewer-section #viewer-streams-container {
     background-color: rgba(255, 255, 255, 0.1);
 }
 
+/* --- MONO-STREAM DEFAULT OVERRIDE --- */
+#viewer-streams-container.single-stream .stream-card {
+    position: relative !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    border: none !important;
+    resize: none !important;
+    box-shadow: none !important;
+    background-color: #000;
+}
+
+#viewer-streams-container.single-stream .stream-card .stream-header {
+    display: none !important;
+}
+
+#viewer-streams-container.single-stream .stream-card video {
+    border-radius: var(--border-radius);
+}
+
+
 
 
