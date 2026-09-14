@@ -1,5 +1,26 @@
 // Constantes e Estados da Aplicação
 const PEER_PREFIX = "streamshare-room-"; // Prefixo para evitar conflito de IDs globais no PeerJS Cloud
+
+// Configuração WebRTC com múltiplos STUN servers confiáveis para evitar quedas por NAT/Firewall
+const PEER_CONFIG = {
+    config: {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' }
+        ],
+        iceCandidatePoolSize: 10
+    }
+};
+
+function createPeer(id) {
+    if (id) {
+        return new Peer(id, PEER_CONFIG);
+    }
+    return new Peer(PEER_CONFIG);
+}
+
 let peer = null;
 let localStream = null;
 let activeConnections = new Set(); // Para o Streamer rastrear viewers ativos
@@ -13,6 +34,18 @@ let coStreamers = new Map(); // Para o Host: coStreamerId -> Connection
 let viewerConnections = new Set(); // Para o Host: Set de conexões de viewers
 let activeStreams = new Map(); // Para o Viewer: streamerPeerId -> { card, videoEl, stream, call }
 let activeStreamerConnections = new Map(); // Para o Viewer: streamerPeerId -> DataConnection
+
+// --- ESTADOS DE RECONEXÃO AUTOMÁTICA ---
+// Viewer
+let viewerReconnectAttempts = 0;
+const VIEWER_MAX_RECONNECT_ATTEMPTS = 5;
+let viewerReconnectTimeout = null;
+let viewerTargetRoomId = null;
+
+// Co-Streamer
+let coStreamerReconnectAttempts = 0;
+const CO_STREAMER_MAX_RECONNECT_ATTEMPTS = 3;
+let coStreamerReconnectTimeout = null;
 
 // Função para sanitizar HTML (prevenção de XSS)
 function escapeHTML(str) {
@@ -1147,7 +1180,7 @@ async function startStreaming(roomId) {
 
         await applyQualitySettings(selectStreamQuality.value);
 
-        peer = new Peer(peerId);
+        peer = createPeer(peerId);
 
         peer.on('open', (id) => {
             streamerStatusBadge.className = "badge badge-live";
@@ -1172,6 +1205,14 @@ async function startStreaming(roomId) {
             updateViewerCount();
         });
 
+        // Mantém a conexão com o servidor de sinalização viva e se auto-recupera
+        peer.on('disconnected', () => {
+            console.warn("Host: Desconectado da sinalização PeerJS. Tentando peer.reconnect()...");
+            if (peer && !peer.destroyed) {
+                peer.reconnect();
+            }
+        });
+
         peer.on('connection', (conn) => {
             conn.on('data', (data) => {
                 if (data && data.type === 'register-streamer') {
@@ -1187,9 +1228,15 @@ async function startStreaming(roomId) {
             if (err.type === 'unavailable-id') {
                 // ID ocupado -> Entrar como Co-Streamer
                 switchToCoStreamer(cleanRoomId);
+            } else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
+                console.warn("Instabilidade transitória de sinalização no Host. Tentando reconectar sinal...");
+                setTimeout(() => {
+                    if (peer && !peer.destroyed) {
+                        peer.reconnect();
+                    }
+                }, 2000);
             } else {
-                showToast(`Erro de conexão: ${err.type}`);
-                stopStreaming();
+                showToast(`Aviso de conexão: ${err.type}`);
             }
         });
 
@@ -1243,13 +1290,30 @@ function registerViewer(conn) {
         const settings = QUALITY_PROFILES[currentQuality];
         applyBitrateLimit(settings.bitrate * 1000);
     }, 1000);
-    
+
+    // Heartbeat bidirecional: envia ping a cada 3s para manter conexões e NAT ativos
+    const pingInterval = setInterval(() => {
+        if (conn.open) {
+            conn.send({ type: 'ping', timestamp: Date.now() });
+        } else {
+            clearInterval(pingInterval);
+        }
+    }, 3000);
+
+    conn.on('data', (data) => {
+        if (data && data.type === 'pong') {
+            // Heartbeat pong recebido do viewer
+        }
+    });
+
     conn.on('close', () => {
+        clearInterval(pingInterval);
         viewerConnections.delete(conn);
         updateViewerCount();
     });
 
     conn.on('error', () => {
+        clearInterval(pingInterval);
         viewerConnections.delete(conn);
         updateViewerCount();
     });
@@ -1275,6 +1339,7 @@ function broadcastStreamersList() {
 // Inicializa a conexão como Co-Streamer se a sala já tiver um Host
 function switchToCoStreamer(cleanRoomId) {
     isCoStreamer = true;
+    coStreamerReconnectAttempts = 0; // Reseta contador ao entrar como co-streamer
     showToast("Entrando como Co-Streamer... 🎥");
     
     if (peer) {
@@ -1283,7 +1348,7 @@ function switchToCoStreamer(cleanRoomId) {
     }
     
     const coStreamerId = PEER_PREFIX + cleanRoomId + '-streamer-' + generateSecureRoomId();
-    peer = new Peer(coStreamerId);
+    peer = createPeer(coStreamerId);
     
     peer.on('open', (id) => {
         streamerStatusBadge.className = "badge badge-live";
@@ -1310,14 +1375,21 @@ function switchToCoStreamer(cleanRoomId) {
         });
 
         hostConnection.on('close', () => {
-            showToast("O Host encerrou a transmissão.");
-            stopStreaming();
+            console.log("Co-Streamer: Conexão com Host perdida. Agendando reconexão...");
+            scheduleCoStreamerReconnect(cleanRoomId);
         });
 
         hostConnection.on('error', (err) => {
             console.error("Erro na conexão com o Host:", err);
-            stopStreaming();
+            scheduleCoStreamerReconnect(cleanRoomId);
         });
+    });
+
+    peer.on('disconnected', () => {
+        console.warn("Co-Streamer: Desconectado da sinalização. Tentando peer.reconnect()...");
+        if (peer && !peer.destroyed) {
+            peer.reconnect();
+        }
     });
 
     peer.on('connection', (conn) => {
@@ -1335,12 +1407,25 @@ function switchToCoStreamer(cleanRoomId) {
 
     peer.on('error', (err) => {
         console.error("Erro no PeerJS do Co-Streamer:", err);
-        showToast(`Erro de Co-Streamer: ${err.type}`);
-        stopStreaming();
+        if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
+            console.warn("Instabilidade transitória no Co-Streamer. Tentando reconectar sinal...");
+            setTimeout(() => {
+                if (peer && !peer.destroyed) peer.reconnect();
+            }, 2000);
+        } else {
+            showToast(`Erro de Co-Streamer: ${err.type}`);
+        }
     });
 }
 
 function stopStreaming() {
+    // Cancela qualquer reconexão automática pendente do co-streamer
+    if (coStreamerReconnectTimeout) {
+        clearTimeout(coStreamerReconnectTimeout);
+        coStreamerReconnectTimeout = null;
+    }
+    coStreamerReconnectAttempts = 0;
+
     if (peer) {
         peer.destroy();
         peer = null;
@@ -1428,7 +1513,101 @@ selectStreamer.addEventListener('click', () => {
 
 // --- LÓGICA DO VIEWER ---
 
-// Monitoramento de inatividade do stream (Watchdog)
+// --- LIMPEZA DO PEER DO VIEWER (sem ir para a tela inicial) ---
+function cleanupViewerPeer() {
+    stopStreamWatchdog();
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+    const streamerIds = Array.from(activeStreams.keys());
+    streamerIds.forEach(id => removeRemoteStream(id));
+    activeStreamerConnections.forEach(conn => conn.close());
+    activeStreamerConnections.clear();
+}
+
+// --- RECONEXÃO AUTOMÁTICA DO VIEWER (Exponential Backoff) ---
+function scheduleViewerReconnect(roomId) {
+    if (!roomId || viewerReconnectAttempts >= VIEWER_MAX_RECONNECT_ATTEMPTS) {
+        showToast("Não foi possível reconectar após várias tentativas. Verifique sua conexão.");
+        disconnectViewer();
+        return;
+    }
+
+    cleanupViewerPeer();
+
+    viewerReconnectAttempts++;
+    const baseDelay = Math.min(2000 * Math.pow(2, viewerReconnectAttempts - 1), 30000);
+    const jitter = Math.floor(Math.random() * 1000);
+    const delay = baseDelay + jitter;
+    const seconds = Math.round(delay / 1000);
+
+    viewerStatusBadge.className = "badge badge-offline";
+    viewerStatusBadge.textContent = "Reconectando";
+    viewerStatusText.textContent = `Reconectando em ${seconds}s... (${viewerReconnectAttempts}/${VIEWER_MAX_RECONNECT_ATTEMPTS})`;
+    viewerPlaceholderText.textContent = "Reconectando ao stream...";
+    showToast(`Conexão perdida. Reconectando em ${seconds}s... (${viewerReconnectAttempts}/${VIEWER_MAX_RECONNECT_ATTEMPTS})`);
+
+    if (viewerReconnectTimeout) clearTimeout(viewerReconnectTimeout);
+    viewerReconnectTimeout = setTimeout(() => {
+        viewerReconnectTimeout = null;
+        connectToStream(roomId);
+    }, delay);
+}
+
+// --- RECONEXÃO AUTOMÁTICA DO CO-STREAMER (Exponential Backoff) ---
+function scheduleCoStreamerReconnect(cleanRoomId) {
+    if (!cleanRoomId || coStreamerReconnectAttempts >= CO_STREAMER_MAX_RECONNECT_ATTEMPTS) {
+        showToast("Não foi possível reconectar ao Host após várias tentativas.");
+        stopStreaming();
+        return;
+    }
+
+    coStreamerReconnectAttempts++;
+    const baseDelay = Math.min(3000 * Math.pow(2, coStreamerReconnectAttempts - 1), 30000);
+    const jitter = Math.floor(Math.random() * 1000);
+    const delay = baseDelay + jitter;
+    const seconds = Math.round(delay / 1000);
+
+    streamerStatusBadge.className = "badge badge-offline";
+    streamerStatusBadge.textContent = "Reconectando";
+    streamerStatusText.textContent = `Host desconectado. Reconectando em ${seconds}s... (${coStreamerReconnectAttempts}/${CO_STREAMER_MAX_RECONNECT_ATTEMPTS})`;
+    showToast(`Host desconectado. Reconectando em ${seconds}s...`);
+
+    if (coStreamerReconnectTimeout) clearTimeout(coStreamerReconnectTimeout);
+    coStreamerReconnectTimeout = setTimeout(() => {
+        coStreamerReconnectTimeout = null;
+        if (!peer) return; // Peer foi destruído manualmente
+
+        if (hostConnection) {
+            hostConnection.close();
+            hostConnection = null;
+        }
+
+        const hostPeerId = PEER_PREFIX + cleanRoomId;
+        hostConnection = peer.connect(hostPeerId);
+
+        hostConnection.on('open', () => {
+            coStreamerReconnectAttempts = 0;
+            hostConnection.send({ type: 'register-streamer', peerId: peer.id });
+            streamerStatusBadge.className = "badge badge-live";
+            streamerStatusBadge.textContent = "CO-STREAM";
+            streamerStatusText.textContent = `Co-Streamer na sala: ${cleanRoomId}`;
+            showToast("Reconectado ao Host com sucesso! ✅");
+        });
+
+        hostConnection.on('close', () => {
+            scheduleCoStreamerReconnect(cleanRoomId);
+        });
+
+        hostConnection.on('error', (err) => {
+            console.error("Erro ao reconectar com Host:", err);
+            scheduleCoStreamerReconnect(cleanRoomId);
+        });
+    }, delay);
+}
+
+// Monitoramento de inatividade do stream (Watchdog com tolerância a telas estáticas)
 function getViewerVideos() {
     return document.querySelectorAll('#viewer-streams-container video');
 }
@@ -1442,31 +1621,32 @@ function startStreamWatchdog() {
 
     streamWatchdogInterval = setInterval(() => {
         const videos = getViewerVideos();
+        const secondsInactive = (Date.now() - lastDataReceivedTime) / 1000;
+
         if (videos.length === 0) {
-            // Se ainda não conectamos a nenhum vídeo, valida timeout da conexão inicial
-            const secondsInactive = (Date.now() - lastDataReceivedTime) / 1000;
-            if (secondsInactive >= 30) {
-                console.warn("Nenhum dado de transmissão recebido por 30 segundos. Desconectando.");
-                showToast("Transmissão não pôde ser iniciada (tempo limite excedido).");
-                disconnectViewer();
+            // Se ainda não conectamos a nenhum vídeo, valida timeout da conexão inicial (60s)
+            if (secondsInactive >= 60) {
+                console.warn("Nenhum dado ou stream recebido por 60 segundos. Agendando reconexão.");
+                showToast("Transmissão demorou para iniciar. Tentando reconectar...");
+                scheduleViewerReconnect(viewerTargetRoomId);
             }
             return;
         }
 
-        // Ignora a contagem se todos os players de vídeo estiverem pausados
+        // Ignora a contagem se todos os players de vídeo estiverem pausados pelo usuário
         const allPaused = Array.from(videos).every(v => v.paused);
         if (allPaused) {
             lastDataReceivedTime = Date.now();
             return;
         }
 
-        const secondsInactive = (Date.now() - lastDataReceivedTime) / 1000;
-        if (secondsInactive >= 30) {
-            console.warn("Nenhum dado de transmissão recebido por 30 segundos. Desconectando.");
-            showToast("Transmissão interrompida (30s sem novos dados).");
-            disconnectViewer();
+        // Se houver streams ativas e com tracks live, mantemos tolerância de 60s sem nenhum heartbeat
+        if (secondsInactive >= 60) {
+            console.warn("Nenhum dado ou heartbeat recebido por 60 segundos. Agendando reconexão.");
+            showToast("Conexão perdida por 60s. Tentando reconectar...");
+            scheduleViewerReconnect(viewerTargetRoomId);
         }
-    }, 2000);
+    }, 3000);
 }
 
 function stopStreamWatchdog() {
@@ -1490,6 +1670,13 @@ function connectToStream(roomId) {
         return;
     }
 
+    // Cancela qualquer timer de reconexão pendente antes de iniciar
+    if (viewerReconnectTimeout) {
+        clearTimeout(viewerReconnectTimeout);
+        viewerReconnectTimeout = null;
+    }
+
+    viewerTargetRoomId = roomId;
     startStreamWatchdog();
 
     const cleanRoomId = roomId.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
@@ -1502,15 +1689,15 @@ function connectToStream(roomId) {
     viewerPlaceholderText.textContent = "Buscando transmissão...";
     btnUnmuteViewer.classList.add('hidden');
 
-    // Inicializa o Peer do Viewer (ID aleatório)
-    peer = new Peer();
+    // Inicializa o Peer do Viewer com configuração STUN
+    peer = createPeer();
 
     peer.on('open', () => {
         console.log("Viewer: Peer do viewer aberto com ID:", peer.id);
         viewerStatusText.textContent = "Procurando Host...";
         
         // Conecta ao canal de dados do Host e armazena a conexão
-        const hostConn = peer.connect(streamerPeerId);
+        const hostConn = peer.connect(streamerPeerId, { reliable: true });
         activeStreamerConnections.set(streamerPeerId, hostConn);
 
         hostConn.on('open', () => {
@@ -1520,22 +1707,33 @@ function connectToStream(roomId) {
             viewerStatusText.textContent = "Conectado ao Host. Aguardando streams...";
             viewerPlaceholderText.textContent = "Conexão estabelecida! Carregando streams...";
             
+            lastDataReceivedTime = Date.now();
             // Envia o sinalizador de que é um viewer
             hostConn.send({ type: 'join-as-viewer' });
         });
 
         hostConn.on('data', (data) => {
-            console.log("Viewer: Recebeu mensagem do Host:", data);
+            lastDataReceivedTime = Date.now();
             if (data && data.type === 'streamers-list') {
                 updateStreamersList(data.streamers);
+            } else if (data && data.type === 'ping') {
+                // Responde ao heartbeat do host e atualiza atividade do watchdog
+                if (hostConn.open) hostConn.send({ type: 'pong' });
             }
         });
 
         hostConn.on('close', () => {
-            console.log("Viewer: Conexão de dados com o Host fechada.");
-            showToast("A conexão com o Host foi encerrada.");
-            disconnectViewer();
+            console.log("Viewer: Conexão de dados com o Host fechada. Agendando reconexão...");
+            scheduleViewerReconnect(viewerTargetRoomId);
         });
+    });
+
+    // Desconexão do signaling não deve matar a chamada P2P imediatamente
+    peer.on('disconnected', () => {
+        console.warn("Viewer: Desconectado da sinalização. Tentando peer.reconnect()...");
+        if (peer && !peer.destroyed) {
+            peer.reconnect();
+        }
     });
 
     peer.on('call', (call) => {
@@ -1544,18 +1742,36 @@ function connectToStream(roomId) {
 
         call.on('stream', (remoteStream) => {
             console.log("Viewer: Recebida stream WebRTC do peer:", call.peer, "Stream ID:", remoteStream.id);
+            lastDataReceivedTime = Date.now();
             addRemoteStream(call.peer, remoteStream, call);
         });
+
+        if (call.peerConnection) {
+            call.peerConnection.addEventListener('connectionstatechange', () => {
+                const state = call.peerConnection.connectionState;
+                console.log(`Viewer: WebRTC Connection State com ${call.peer}:`, state);
+                if (state === 'failed') {
+                    console.warn(`Viewer: Conexão WebRTC com ${call.peer} falhou definitivamente.`);
+                    removeRemoteStream(call.peer);
+                }
+            });
+        }
     });
 
     peer.on('error', (err) => {
         console.error("Erro no PeerJS do Viewer:", err);
         if (err.type === 'peer-unavailable') {
-            showToast("Sala não encontrada. Verifique se o código está correto e se o host está online.");
+            showToast("Host não encontrado. Tentando novamente...");
+            scheduleViewerReconnect(viewerTargetRoomId);
+        } else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
+            console.warn("Instabilidade de rede no canal de sinalização do Viewer. Tentando reconectar...");
+            if (peer && !peer.destroyed) {
+                peer.reconnect();
+            }
         } else {
             showToast(`Erro de conexão: ${err.type}`);
+            disconnectViewer();
         }
-        disconnectViewer();
     });
 }
 
@@ -1795,6 +2011,14 @@ function makeElementDraggable(card, header, container) {
 }
 
 function disconnectViewer() {
+    // Cancela reconexão pendente (desconexão manual tem prioridade)
+    if (viewerReconnectTimeout) {
+        clearTimeout(viewerReconnectTimeout);
+        viewerReconnectTimeout = null;
+    }
+    viewerReconnectAttempts = 0;
+    viewerTargetRoomId = null;
+
     stopStreamWatchdog();
     if (peer) {
         peer.destroy();
@@ -1851,6 +2075,7 @@ btnUnmuteViewer.addEventListener('click', () => {
 });
 
 btnConnectViewer.addEventListener('click', () => {
+    viewerReconnectAttempts = 0; // Conexão manual reseta o contador de tentativas
     connectToStream(viewerRoomInput.value);
 });
 

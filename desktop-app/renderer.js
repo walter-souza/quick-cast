@@ -1,9 +1,36 @@
 // Constantes do PeerJS
 const PEER_PREFIX = "streamshare-room-";
+
+// Configuração WebRTC com múltiplos STUN servers confiáveis para evitar quedas por NAT/Firewall
+const PEER_CONFIG = {
+    config: {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' }
+        ],
+        iceCandidatePoolSize: 10
+    }
+};
+
+function createPeer(id) {
+    if (id) {
+        return new Peer(id, PEER_CONFIG);
+    }
+    return new Peer(PEER_CONFIG);
+}
+
 let peer = null;
 let localStream = null;
 const activeConnections = new Set(); // { conn }
 const activeCalls = new Set(); // { call }
+
+// --- ESTADOS DE RECONEXÃO AUTOMÁTICA DO STREAMER ---
+let streamerReconnectAttempts = 0;
+const STREAMER_MAX_RECONNECT_ATTEMPTS = 3;
+let streamerReconnectTimeout = null;
+let streamerRoomIdForReconnect = null;
 
 // Função para sanitizar HTML (prevenção de XSS)
 function escapeHTML(str) {
@@ -972,6 +999,131 @@ function stopVULoop() {
     }
 }
 
+// --- GERENCIAR CONEXÃO DE VIEWER (extraído para reutilização no reconnect) ---
+function handleViewerConnection(conn, profile) {
+    if (activeConnections.size >= 5) {
+        conn.on('open', () => { conn.close(); });
+        showToast("Conexão recusada: limite de 5 espectadores atingido.");
+        return;
+    }
+    activeConnections.add(conn);
+    updateViewerCount();
+
+    // Heartbeat periódico com o viewer para manter o NAT aberto
+    let pingInterval = null;
+
+    conn.on('open', () => {
+        pingInterval = setInterval(() => {
+            if (conn.open) {
+                conn.send({ type: 'ping', timestamp: Date.now() });
+            } else {
+                clearInterval(pingInterval);
+            }
+        }, 3000);
+
+        if (conn.peerConnection) {
+            conn.peerConnection.addEventListener('connectionstatechange', () => {
+                const state = conn.peerConnection.connectionState;
+                if (state === 'failed' || state === 'closed') {
+                    if (activeConnections.has(conn)) {
+                        activeConnections.delete(conn);
+                        updateViewerCount();
+                    }
+                    if (pingInterval) clearInterval(pingInterval);
+                }
+            });
+        }
+
+        const call = peer.call(conn.peer, localStream);
+        activeCalls.add(call);
+
+        call.on('peerConnection', (pc) => {
+            pc.addEventListener('connectionstatechange', () => {
+                if (pc.connectionState === 'connected') {
+                    applyBitrateControl(pc, profile.bitrate);
+                }
+            });
+        });
+
+        call.on('close', () => {
+            activeCalls.delete(call);
+        });
+    });
+
+    conn.on('close', () => {
+        if (pingInterval) clearInterval(pingInterval);
+        activeConnections.delete(conn);
+        updateViewerCount();
+    });
+
+    conn.on('error', () => {
+        if (pingInterval) clearInterval(pingInterval);
+        activeConnections.delete(conn);
+        updateViewerCount();
+    });
+}
+
+// --- RECONEXÃO AUTOMÁTICA DO STREAMER (Exponential Backoff) ---
+function scheduleStreamerReconnect() {
+    if (!streamerRoomIdForReconnect || streamerReconnectAttempts >= STREAMER_MAX_RECONNECT_ATTEMPTS) {
+        showToast("Não foi possível reconectar. Verifique sua rede e reinicie a transmissão.");
+        stopStreaming();
+        return;
+    }
+
+    streamerReconnectAttempts++;
+    const baseDelay = Math.min(3000 * Math.pow(2, streamerReconnectAttempts - 1), 30000);
+    const jitter = Math.floor(Math.random() * 1000);
+    const delay = baseDelay + jitter;
+    const seconds = Math.round(delay / 1000);
+
+    statusBadge.className = "badge badge-offline";
+    statusBadge.textContent = "Reconectando";
+    statusText.textContent = `Reconectando em ${seconds}s... (tentativa ${streamerReconnectAttempts}/${STREAMER_MAX_RECONNECT_ATTEMPTS})`;
+    showToast(`Conexão perdida. Reconectando em ${seconds}s...`);
+
+    if (streamerReconnectTimeout) clearTimeout(streamerReconnectTimeout);
+    streamerReconnectTimeout = setTimeout(() => {
+        streamerReconnectTimeout = null;
+
+        // Destrói peer antigo sem zerar localStream
+        if (peer) { peer.destroy(); peer = null; }
+
+        const profile = getSelectedQualityProfile();
+        const streamerPeerId = PEER_PREFIX + streamerRoomIdForReconnect;
+        peer = createPeer(streamerPeerId);
+
+        peer.on('open', () => {
+            streamerReconnectAttempts = 0;
+            statusBadge.className = "badge badge-live";
+            statusBadge.textContent = "Ao Vivo";
+            statusText.textContent = "Transmissão reconectada! Compondo mixer...";
+            showToast("Transmissão reconectada com sucesso! ✅");
+        });
+
+        peer.on('disconnected', () => {
+            console.log("Streamer: Desconectado do servidor de sinalização. Tentando peer.reconnect()...");
+            if (peer && !peer.destroyed) {
+                peer.reconnect();
+            }
+        });
+
+        peer.on('connection', (conn) => {
+            handleViewerConnection(conn, profile);
+        });
+
+        peer.on('error', (err) => {
+            console.error("Erro no canal de sinalização (reconexão):", err);
+            if (err.type === 'unavailable-id' || ['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
+                scheduleStreamerReconnect();
+            } else {
+                showToast(`Erro de rede: ${err.type}`);
+                stopStreaming();
+            }
+        });
+    }, delay);
+}
+
 // --- TRANSMISSÃO WEBRTC (INICIAR / PARAR) ---
 async function startStreaming() {
     const roomId = roomInput.value.trim();
@@ -989,6 +1141,10 @@ async function startStreaming() {
     const profile = getSelectedQualityProfile();
     const cleanRoomId = roomId.toLowerCase().replace(/[^a-z0-9-_]/g, '');
     const streamerPeerId = PEER_PREFIX + cleanRoomId;
+    
+    // Salva o roomId para uso no reconnect automático
+    streamerRoomIdForReconnect = cleanRoomId;
+    streamerReconnectAttempts = 0;
     
     btnStart.disabled = true;
     statusText.textContent = "Iniciando mixer e sinalização...";
@@ -1012,8 +1168,8 @@ async function startStreaming() {
         
         localStream = new MediaStream(outputTracks);
         
-        // Inicializa conexão PeerJS
-        peer = new Peer(streamerPeerId);
+        // Inicializa conexão PeerJS com múltiplos STUNs
+        peer = createPeer(streamerPeerId);
         
         peer.on('open', (id) => {
             statusBadge.className = "badge badge-live";
@@ -1029,61 +1185,33 @@ async function startStreaming() {
             
             showToast("Transmissão com mixer OBS ativada! 🚀");
         });
+
+        // Reconecta ao servidor de sinalização em caso de queda temporária de rede
+        peer.on('disconnected', () => {
+            console.log("Streamer: Desconectado do servidor de sinalização. Tentando peer.reconnect()...");
+            statusBadge.className = "badge badge-offline";
+            statusBadge.textContent = "Reconectando";
+            statusText.textContent = "Conexão com sinalização perdida. Reconectando...";
+            if (peer && !peer.destroyed) {
+                peer.reconnect();
+            }
+        });
         
         peer.on('connection', (conn) => {
-            if (activeConnections.size >= 5) {
-                conn.on('open', () => {
-                    conn.close();
-                });
-                showToast("Conexão recusada: limite de 5 espectadores atingido.");
-                return;
-            }
-            activeConnections.add(conn);
-            updateViewerCount();
-            
-            conn.on('open', () => {
-                if (conn.peerConnection) {
-                    conn.peerConnection.addEventListener('connectionstatechange', () => {
-                        if (['failed', 'closed', 'disconnected'].includes(conn.peerConnection.connectionState)) {
-                            if (activeConnections.has(conn)) {
-                                activeConnections.delete(conn);
-                                updateViewerCount();
-                            }
-                        }
-                    });
-                }
-                
-                // Conecta a stream final renderizada do canvas
-                const call = peer.call(conn.peer, localStream);
-                activeCalls.add(call);
-                
-                call.on('peerConnection', (pc) => {
-                    pc.addEventListener('connectionstatechange', () => {
-                        if (pc.connectionState === 'connected') {
-                            applyBitrateControl(pc, profile.bitrate);
-                        }
-                    });
-                });
-                
-                call.on('close', () => {
-                    activeCalls.delete(call);
-                });
-            });
-            
-            conn.on('close', () => {
-                activeConnections.delete(conn);
-                updateViewerCount();
-            });
+            handleViewerConnection(conn, profile);
         });
         
         peer.on('error', (err) => {
             console.error("Erro no canal de sinalização:", err);
             if (err.type === 'unavailable-id') {
                 showToast("Este código de sala já está ativo em outra transmissão. Escolha outro!");
+                stopStreaming();
+            } else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
+                scheduleStreamerReconnect();
             } else {
                 showToast(`Erro de rede: ${err.type}`);
+                stopStreaming();
             }
-            stopStreaming();
         });
         
     } catch (err) {
@@ -1094,6 +1222,14 @@ async function startStreaming() {
 }
 
 function stopStreaming() {
+    // Cancela reconexão automática pendente (parada manual tem prioridade)
+    if (streamerReconnectTimeout) {
+        clearTimeout(streamerReconnectTimeout);
+        streamerReconnectTimeout = null;
+    }
+    streamerReconnectAttempts = 0;
+    streamerRoomIdForReconnect = null;
+
     statusText.textContent = "Encerrando transmissão...";
     
     activeConnections.forEach(conn => conn.close());
