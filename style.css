@@ -228,6 +228,45 @@ video {
     gap: 12px;
     z-index: 2;
     transition: opacity 0.3s;
+    text-align: center;
+    padding: 20px;
+}
+
+.video-placeholder h3 {
+    color: var(--text-color);
+    font-size: 1.2rem;
+    font-weight: 600;
+}
+
+.placeholder-icon {
+    font-size: 2.8rem;
+    margin-bottom: 2px;
+}
+
+.placeholder-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 6px;
+    z-index: 10;
+}
+
+.placeholder-actions .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    transition: transform 0.15s, background-color 0.2s, box-shadow 0.2s;
+}
+
+.placeholder-actions .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px -2px rgba(0, 0, 0, 0.4);
 }
 
 .video-placeholder.hidden {

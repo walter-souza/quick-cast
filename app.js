@@ -1143,6 +1143,22 @@ function initOBSStudio() {
     document.getElementById('btn-del-source').onclick = deleteActiveSource;
     document.getElementById('btn-source-up').onclick = () => moveSourceZ('up');
     document.getElementById('btn-source-down').onclick = () => moveSourceZ('down');
+
+    // Botões diretos no monitor de preview
+    const placeholderBtnScreen = document.getElementById('placeholder-btn-screen');
+    const placeholderBtnWebcam = document.getElementById('placeholder-btn-webcam');
+    if (placeholderBtnScreen) {
+        placeholderBtnScreen.onclick = (e) => {
+            e.stopPropagation();
+            addDisplaySource();
+        };
+    }
+    if (placeholderBtnWebcam) {
+        placeholderBtnWebcam.onclick = (e) => {
+            e.stopPropagation();
+            addWebcamSource();
+        };
+    }
     
     initMouseEvents();
     renderScenes();

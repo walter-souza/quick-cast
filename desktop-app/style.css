@@ -327,12 +327,18 @@ video {
     background-color: #11111b;
     padding: 30px;
     text-align: center;
-    gap: 15px;
+    gap: 12px;
     z-index: 10;
 }
 
+.preview-placeholder h3 {
+    color: #f8fafc;
+    font-size: 1.2rem;
+    font-weight: 600;
+}
+
 .placeholder-icon {
-    font-size: 3rem;
+    font-size: 2.8rem;
 }
 
 .preview-placeholder p {
@@ -340,6 +346,32 @@ video {
     font-size: 0.9rem;
     max-width: 400px;
     line-height: 1.4;
+}
+
+.placeholder-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 6px;
+    z-index: 10;
+}
+
+.placeholder-actions .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    transition: transform 0.15s, background-color 0.2s, box-shadow 0.2s;
+}
+
+.placeholder-actions .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px -2px rgba(0, 0, 0, 0.4);
 }
 
 /* Toast Notification */

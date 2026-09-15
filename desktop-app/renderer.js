@@ -1333,6 +1333,27 @@ document.getElementById('btn-del-source').addEventListener('click', deleteActive
 document.getElementById('btn-source-up').addEventListener('click', () => moveSourceZ('up'));
 document.getElementById('btn-source-down').addEventListener('click', () => moveSourceZ('down'));
 
+// Botões diretos no monitor de preview
+const placeholderBtnScreen = document.getElementById('placeholder-btn-screen');
+const placeholderBtnWindow = document.getElementById('placeholder-btn-window');
+const placeholderBtnWebcam = document.getElementById('placeholder-btn-webcam');
+
+if (placeholderBtnScreen) {
+    placeholderBtnScreen.addEventListener('click', () => {
+        openSourcePicker('screen');
+    });
+}
+if (placeholderBtnWindow) {
+    placeholderBtnWindow.addEventListener('click', () => {
+        openSourcePicker('window');
+    });
+}
+if (placeholderBtnWebcam) {
+    placeholderBtnWebcam.addEventListener('click', () => {
+        addWebcamSource();
+    });
+}
+
 btnCancelPicker.addEventListener('click', () => {
     sourcePickerModal.classList.add('hidden');
 });
