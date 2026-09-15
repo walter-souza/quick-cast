@@ -1,6 +1,17 @@
 // Constantes e Estados da Aplicação
 const PEER_PREFIX = "streamshare-room-"; // Prefixo para evitar conflito de IDs globais no PeerJS Cloud
 
+// --- CONFIGURAÇÃO DO SERVIDOR DE SINALIZAÇÃO (RENDER / PRÓPRIO) ---
+// Após fazer o deploy no Render (veja a pasta /server), preencha o host abaixo:
+// Exemplo: host: 'quickcast-signaling.onrender.com'
+const SIGNALING_SERVER = {
+    host: null, // Deixe null para nuvem pública ou coloque seu host do Render (ex: 'quickcast-signaling.onrender.com')
+    port: 443,
+    path: '/peerjs',
+    key: 'quickcast',
+    secure: true
+};
+
 // Configuração WebRTC com múltiplos STUN servers confiáveis para evitar quedas por NAT/Firewall
 const PEER_CONFIG = {
     config: {
@@ -15,10 +26,18 @@ const PEER_CONFIG = {
 };
 
 function createPeer(id) {
-    if (id) {
-        return new Peer(id, PEER_CONFIG);
+    const options = { ...PEER_CONFIG };
+    if (SIGNALING_SERVER.host) {
+        options.host = SIGNALING_SERVER.host;
+        options.port = SIGNALING_SERVER.port;
+        options.path = SIGNALING_SERVER.path;
+        options.key = SIGNALING_SERVER.key;
+        options.secure = SIGNALING_SERVER.secure;
     }
-    return new Peer(PEER_CONFIG);
+    if (id) {
+        return new Peer(id, options);
+    }
+    return new Peer(options);
 }
 
 let peer = null;

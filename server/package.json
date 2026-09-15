@@ -1,0 +1,23 @@
+{
+  "name": "quickcast-signaling-server",
+  "version": "1.0.0",
+  "description": "Servidor de sinalizacao WebRTC / PeerJS exclusivo para o QuickCast",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "webrtc",
+    "peerjs",
+    "signaling",
+    "quickcast"
+  ],
+  "author": "QuickCast",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "peer": "^1.0.2"
+  }
+}
