@@ -1,11 +1,9 @@
 // Constantes e Estados da Aplicação
 const PEER_PREFIX = "streamshare-room-"; // Prefixo para evitar conflito de IDs globais no PeerJS Cloud
 
-// --- CONFIGURAÇÃO DO SERVIDOR DE SINALIZAÇÃO (RENDER / PRÓPRIO) ---
-// Após fazer o deploy no Render (veja a pasta /server), preencha o host abaixo:
-// Exemplo: host: 'quickcast-signaling.onrender.com'
+// --- CONFIGURAÇÃO DO SERVIDOR DE SINALIZAÇÃO DEDICADO (RENDER) ---
 const SIGNALING_SERVER = {
-    host: null, // Deixe null para nuvem pública ou coloque seu host do Render (ex: 'quickcast-signaling.onrender.com')
+    host: 'quick-cast.onrender.com',
     port: 443,
     path: '/peerjs',
     key: 'quickcast',
