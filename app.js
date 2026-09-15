@@ -6,7 +6,6 @@ const SIGNALING_SERVER = {
     host: 'quick-cast.onrender.com',
     port: 443,
     path: '/peerjs',
-    key: 'quickcast',
     secure: true
 };
 
@@ -29,7 +28,6 @@ function createPeer(id) {
         options.host = SIGNALING_SERVER.host;
         options.port = SIGNALING_SERVER.port;
         options.path = SIGNALING_SERVER.path;
-        options.key = SIGNALING_SERVER.key;
         options.secure = SIGNALING_SERVER.secure;
     }
     if (id) {
@@ -1197,9 +1195,18 @@ async function startStreaming(roomId) {
 
         await applyQualitySettings(selectStreamQuality.value);
 
+        btnStartStream.textContent = "Conectando à sala...";
+
         peer = createPeer(peerId);
 
+        const openTimeout = setTimeout(() => {
+            if (btnStartStream.disabled && btnStopStream.disabled) {
+                showToast("Conectando ao servidor... Aguarde um instante.");
+            }
+        }, 5000);
+
         peer.on('open', (id) => {
+            clearTimeout(openTimeout);
             streamerStatusBadge.className = "badge badge-live";
             streamerStatusBadge.textContent = "LIVE";
             streamerStatusText.textContent = `Host da sala: ${cleanRoomId}`;
@@ -1241,12 +1248,19 @@ async function startStreaming(roomId) {
         });
 
         peer.on('error', (err) => {
+            clearTimeout(openTimeout);
             console.error("Erro no PeerJS do Streamer:", err);
             if (err.type === 'unavailable-id') {
                 // ID ocupado -> Entrar como Co-Streamer
                 switchToCoStreamer(cleanRoomId);
             } else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
                 console.warn("Instabilidade transitória de sinalização no Host. Tentando reconectar sinal...");
+                // Se ainda não estava transmitindo, libera o botão para tentar de novo
+                if (btnStopStream.disabled) {
+                    btnStartStream.disabled = false;
+                    btnStartStream.textContent = "Iniciar Transmissão";
+                    showToast(`Erro ao conectar ao servidor: ${err.type}. Tente novamente.`);
+                }
                 setTimeout(() => {
                     if (peer && !peer.destroyed) {
                         peer.reconnect();
@@ -1254,6 +1268,10 @@ async function startStreaming(roomId) {
                 }, 2000);
             } else {
                 showToast(`Aviso de conexão: ${err.type}`);
+                if (btnStopStream.disabled) {
+                    btnStartStream.disabled = false;
+                    btnStartStream.textContent = "Iniciar Transmissão";
+                }
             }
         });
 

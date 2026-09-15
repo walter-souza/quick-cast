@@ -30,16 +30,16 @@ const server = app.listen(PORT, () => {
     console.log(`========================================`);
 });
 
-// Inicialização do PeerServer
+// Inicialização do PeerServer com compatibilidade total de caminhos
 const peerServer = ExpressPeerServer(server, {
     debug: true,
     path: '/',
     allow_discovery: true,
-    alive_timeout: 60000,
-    key: 'quickcast'
+    alive_timeout: 60000
 });
 
 app.use('/peerjs', peerServer);
+app.use('/', peerServer);
 
 // Monitoramento de conexões
 peerServer.on('connection', (client) => {

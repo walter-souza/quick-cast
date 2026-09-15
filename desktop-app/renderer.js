@@ -6,7 +6,6 @@ const SIGNALING_SERVER = {
     host: 'quick-cast.onrender.com',
     port: 443,
     path: '/peerjs',
-    key: 'quickcast',
     secure: true
 };
 
@@ -29,7 +28,6 @@ function createPeer(id) {
         options.host = SIGNALING_SERVER.host;
         options.port = SIGNALING_SERVER.port;
         options.path = SIGNALING_SERVER.path;
-        options.key = SIGNALING_SERVER.key;
         options.secure = SIGNALING_SERVER.secure;
     }
     if (id) {
