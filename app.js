@@ -1430,12 +1430,25 @@ function switchToCoStreamer(cleanRoomId) {
     peer.on('connection', (conn) => {
         conn.on('data', (data) => {
             if (data && data.type === 'join-as-viewer') {
+                viewerConnections.add(conn);
+                updateViewerCount();
+
                 const call = peer.call(conn.peer, localStream);
                 setTimeout(() => {
                     const currentQuality = selectStreamQuality.value;
                     const settings = QUALITY_PROFILES[currentQuality];
                     applyBitrateLimit(settings.bitrate * 1000);
                 }, 1000);
+
+                conn.on('close', () => {
+                    viewerConnections.delete(conn);
+                    updateViewerCount();
+                });
+
+                conn.on('error', () => {
+                    viewerConnections.delete(conn);
+                    updateViewerCount();
+                });
             }
         });
     });
@@ -1529,7 +1542,9 @@ function resetStreamerUI() {
 }
 
 function updateViewerCount() {
-    streamerViewersCount.textContent = activeConnections.size;
+    if (streamerViewersCount) {
+        streamerViewersCount.textContent = viewerConnections.size;
+    }
 }
 
 btnStartStream.addEventListener('click', () => {
@@ -1718,6 +1733,10 @@ function connectToStream(roomId) {
     const streamerPeerId = PEER_PREFIX + cleanRoomId;
 
     showSection(viewerSection);
+    document.body.classList.add('theater-mode');
+    if (btnTheaterMode) {
+        btnTheaterMode.textContent = "📺 Modo Normal";
+    }
     viewerStatusBadge.className = "badge badge-offline";
     viewerStatusBadge.textContent = "Conectando";
     viewerStatusText.textContent = "Conectando ao servidor...";
