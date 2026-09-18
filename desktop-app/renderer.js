@@ -9,14 +9,31 @@ const SIGNALING_SERVER = {
     secure: true
 };
 
-// Configuração WebRTC com múltiplos STUN servers confiáveis para evitar quedas por NAT/Firewall
+// Configuração WebRTC com múltiplos STUN e TURN servers para contornar NAT Simétrico, 4G/5G e Firewalls
 const PEER_CONFIG = {
     config: {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun.cloudflare.com:3478' }
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' },
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelay',
+                credential: 'openrelay'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelay',
+                credential: 'openrelay'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelay',
+                credential: 'openrelay'
+            }
         ],
         iceCandidatePoolSize: 10
     }
@@ -1016,18 +1033,56 @@ function stopVULoop() {
 
 // --- GERENCIAR CONEXÃO DE VIEWER (extraído para reutilização no reconnect) ---
 function handleViewerConnection(conn, profile) {
-    if (activeConnections.size >= 5) {
-        conn.on('open', () => { conn.close(); });
+    const alreadyConnected = activeConnections.has(conn);
+    if (activeConnections.size >= 5 && !alreadyConnected) {
+        if (conn.open) {
+            conn.close();
+        } else {
+            conn.on('open', () => { conn.close(); });
+        }
         showToast("Conexão recusada: limite de 5 espectadores atingido.");
         return;
     }
-    activeConnections.add(conn);
-    updateViewerCount();
+    
+    if (!alreadyConnected) {
+        activeConnections.add(conn);
+        updateViewerCount();
+    }
+
+    function callViewer(force = false) {
+        if (!localStream) return;
+        try {
+            console.log(`Desktop Streamer: Chamando viewer ${conn.peer} (force=${force})...`);
+            const call = peer.call(conn.peer, localStream);
+            if (call) {
+                activeCalls.add(call);
+
+                call.on('peerConnection', (pc) => {
+                    pc.addEventListener('connectionstatechange', () => {
+                        if (pc.connectionState === 'connected') {
+                            applyBitrateControl(pc, profile.bitrate);
+                        }
+                    });
+                });
+
+                call.on('error', (err) => {
+                    console.warn(`Desktop Streamer: Erro na chamada com ${conn.peer}:`, err);
+                });
+
+                call.on('close', () => {
+                    activeCalls.delete(call);
+                });
+            }
+        } catch (err) {
+            console.error(`Desktop Streamer: Falha ao chamar viewer ${conn.peer}:`, err);
+        }
+    }
 
     // Heartbeat periódico com o viewer para manter o NAT aberto
     let pingInterval = null;
 
-    conn.on('open', () => {
+    function setupDataChannel() {
+        if (pingInterval) clearInterval(pingInterval);
         pingInterval = setInterval(() => {
             if (conn.open) {
                 conn.send({ type: 'ping', timestamp: Date.now() });
@@ -1049,21 +1104,22 @@ function handleViewerConnection(conn, profile) {
             });
         }
 
-        const call = peer.call(conn.peer, localStream);
-        activeCalls.add(call);
+        callViewer();
+    }
 
-        call.on('peerConnection', (pc) => {
-            pc.addEventListener('connectionstatechange', () => {
-                if (pc.connectionState === 'connected') {
-                    applyBitrateControl(pc, profile.bitrate);
-                }
-            });
-        });
-
-        call.on('close', () => {
-            activeCalls.delete(call);
-        });
+    conn.on('data', (data) => {
+        if (data && (data.type === 'join-as-viewer' || data.type === 'request-stream')) {
+            callViewer(data.type === 'request-stream');
+        } else if (data && data.type === 'ping') {
+            if (conn.open) conn.send({ type: 'pong' });
+        }
     });
+
+    if (conn.open) {
+        setupDataChannel();
+    } else {
+        conn.on('open', setupDataChannel);
+    }
 
     conn.on('close', () => {
         if (pingInterval) clearInterval(pingInterval);

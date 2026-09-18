@@ -24,14 +24,31 @@ const SIGNALING_SERVER = {
     secure: true
 };
 
-// Configuração WebRTC com múltiplos STUN servers confiáveis para evitar quedas por NAT/Firewall
+// Configuração WebRTC com múltiplos STUN e TURN servers para contornar NAT Simétrico, 4G/5G e Firewalls
 const PEER_CONFIG = {
     config: {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun.cloudflare.com:3478' }
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' },
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelay',
+                credential: 'openrelay'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelay',
+                credential: 'openrelay'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelay',
+                credential: 'openrelay'
+            }
         ],
         iceCandidatePoolSize: 10
     }
@@ -1270,12 +1287,22 @@ async function startStreaming(roomId) {
 
         peer.on('connection', (conn) => {
             conn.on('data', (data) => {
-                if (data && data.type === 'register-streamer') {
+                if (!data) return;
+                if (data.type === 'register-streamer') {
                     registerCoStreamer(data.peerId, conn);
-                } else if (data && data.type === 'join-as-viewer') {
-                    registerViewer(conn);
+                } else if (data.type === 'join-as-viewer' || data.type === 'request-stream') {
+                    registerViewer(conn, data.type === 'request-stream');
                 }
             });
+
+            // Se a conexão já abriu antes do listener ou de data chegar, inicializa viewer preventivamente
+            if (conn.open) {
+                registerViewer(conn);
+            } else {
+                conn.on('open', () => {
+                    registerViewer(conn);
+                });
+            }
         });
 
         peer.on('error', (err) => {
@@ -1336,59 +1363,77 @@ function registerCoStreamer(coStreamerId, conn) {
     });
 }
 
-function registerViewer(conn) {
-    if (viewerConnections.has(conn)) return;
-    
-    if (viewerConnections.size >= 5) {
+function registerViewer(conn, forceReCall = false) {
+    const alreadyRegistered = viewerConnections.has(conn);
+    if (viewerConnections.size >= 5 && !alreadyRegistered) {
         conn.close();
         showToast("Conexão recusada: limite de 5 espectadores atingido.");
         return;
     }
     
-    viewerConnections.add(conn);
-    updateViewerCount();
+    if (!alreadyRegistered) {
+        viewerConnections.add(conn);
+        updateViewerCount();
+    }
     
     // Envia a lista atual de streamers para o viewer
     sendStreamersList(conn);
     
     // Liga para o viewer e envia a transmissão local (do Host)
-    const call = peer.call(conn.peer, localStream);
-    setTimeout(() => {
-        const currentQuality = selectStreamQuality.value;
-        const settings = QUALITY_PROFILES[currentQuality];
-        applyBitrateLimit(settings.bitrate * 1000);
-    }, 1000);
+    if (localStream && (!alreadyRegistered || forceReCall)) {
+        try {
+            console.log(`Host: Chamando viewer ${conn.peer} (forceReCall=${forceReCall})...`);
+            const call = peer.call(conn.peer, localStream);
+            if (call) {
+                call.on('error', (err) => {
+                    console.warn(`Host: Erro na chamada com viewer ${conn.peer}:`, err);
+                });
+                setTimeout(() => {
+                    const currentQuality = selectStreamQuality.value;
+                    const settings = QUALITY_PROFILES[currentQuality];
+                    if (settings) applyBitrateLimit(settings.bitrate * 1000);
+                }, 1000);
+            }
+        } catch (err) {
+            console.error(`Host: Falha ao chamar viewer ${conn.peer}:`, err);
+        }
+    }
 
-    // Heartbeat bidirecional: envia ping a cada 3s para manter conexões e NAT ativos
-    const pingInterval = setInterval(() => {
-        if (conn.open) {
-            conn.send({ type: 'ping', timestamp: Date.now() });
-        } else {
+    if (!alreadyRegistered) {
+        // Heartbeat bidirecional: envia ping a cada 3s para manter conexões e NAT ativos
+        const pingInterval = setInterval(() => {
+            if (conn.open) {
+                conn.send({ type: 'ping', timestamp: Date.now() });
+            } else {
+                clearInterval(pingInterval);
+            }
+        }, 3000);
+
+        conn.on('data', (data) => {
+            if (data && data.type === 'pong') {
+                // Heartbeat pong recebido do viewer
+            }
+        });
+
+        conn.on('close', () => {
             clearInterval(pingInterval);
-        }
-    }, 3000);
+            viewerConnections.delete(conn);
+            updateViewerCount();
+        });
 
-    conn.on('data', (data) => {
-        if (data && data.type === 'pong') {
-            // Heartbeat pong recebido do viewer
-        }
-    });
-
-    conn.on('close', () => {
-        clearInterval(pingInterval);
-        viewerConnections.delete(conn);
-        updateViewerCount();
-    });
-
-    conn.on('error', () => {
-        clearInterval(pingInterval);
-        viewerConnections.delete(conn);
-        updateViewerCount();
-    });
+        conn.on('error', () => {
+            clearInterval(pingInterval);
+            viewerConnections.delete(conn);
+            updateViewerCount();
+        });
+    }
 }
 
 function sendStreamersList(conn) {
-    if (!conn.open) return;
+    if (!conn.open) {
+        conn.on('open', () => sendStreamersList(conn));
+        return;
+    }
     const list = [peer.id, ...coStreamers.keys()];
     conn.send({
         type: 'streamers-list',
@@ -1461,28 +1506,49 @@ function switchToCoStreamer(cleanRoomId) {
     });
 
     peer.on('connection', (conn) => {
-        conn.on('data', (data) => {
-            if (data && data.type === 'join-as-viewer') {
+        function callViewerIfStreamReady(forceReCall = false) {
+            const alreadyIn = viewerConnections.has(conn);
+            if (!alreadyIn) {
                 viewerConnections.add(conn);
                 updateViewerCount();
-
-                const call = peer.call(conn.peer, localStream);
-                setTimeout(() => {
-                    const currentQuality = selectStreamQuality.value;
-                    const settings = QUALITY_PROFILES[currentQuality];
-                    applyBitrateLimit(settings.bitrate * 1000);
-                }, 1000);
-
-                conn.on('close', () => {
-                    viewerConnections.delete(conn);
-                    updateViewerCount();
-                });
-
-                conn.on('error', () => {
-                    viewerConnections.delete(conn);
-                    updateViewerCount();
-                });
             }
+            if (localStream && (!alreadyIn || forceReCall)) {
+                try {
+                    const call = peer.call(conn.peer, localStream);
+                    if (call) {
+                        call.on('error', (err) => console.warn("Co-streamer call error:", err));
+                        setTimeout(() => {
+                            const currentQuality = selectStreamQuality.value;
+                            const settings = QUALITY_PROFILES[currentQuality];
+                            if (settings) applyBitrateLimit(settings.bitrate * 1000);
+                        }, 1000);
+                    }
+                } catch (e) {
+                    console.error("Erro ao chamar viewer do co-streamer:", e);
+                }
+            }
+        }
+
+        conn.on('data', (data) => {
+            if (data && (data.type === 'join-as-viewer' || data.type === 'request-stream')) {
+                callViewerIfStreamReady(data.type === 'request-stream');
+            }
+        });
+
+        if (conn.open) {
+            callViewerIfStreamReady();
+        } else {
+            conn.on('open', () => callViewerIfStreamReady());
+        }
+
+        conn.on('close', () => {
+            viewerConnections.delete(conn);
+            updateViewerCount();
+        });
+
+        conn.on('error', () => {
+            viewerConnections.delete(conn);
+            updateViewerCount();
         });
     });
 
@@ -1789,17 +1855,33 @@ function connectToStream(roomId) {
         const hostConn = peer.connect(streamerPeerId, { reliable: true });
         activeStreamerConnections.set(streamerPeerId, hostConn);
 
-        hostConn.on('open', () => {
+        let streamRequestRetryInterval = null;
+
+        function onHostConnOpen() {
             console.log("Viewer: Conexão de dados aberta com o Host:", streamerPeerId);
             viewerStatusBadge.className = "badge badge-live";
             viewerStatusBadge.textContent = "Conectado";
-            viewerStatusText.textContent = "Conectado ao Host. Aguardando streams...";
+            viewerStatusText.textContent = "Conectado ao Host. Solicitando streams...";
             viewerPlaceholderText.textContent = "Conexão estabelecida! Carregando streams...";
-            
             lastDataReceivedTime = Date.now();
-            // Envia o sinalizador de que é um viewer
             hostConn.send({ type: 'join-as-viewer' });
-        });
+        }
+
+        if (hostConn.open) {
+            onHostConnOpen();
+        } else {
+            hostConn.on('open', onHostConnOpen);
+        }
+
+        // Retry ativo: se em 4 segundos o stream não chegou, solicita retransmissão explicitamente
+        streamRequestRetryInterval = setInterval(() => {
+            if (activeStreams.size === 0 && hostConn.open) {
+                console.log("Viewer: Stream ainda não recebido. Solicitando retransmissão ao Host...");
+                hostConn.send({ type: 'request-stream' });
+            } else if (activeStreams.size > 0) {
+                clearInterval(streamRequestRetryInterval);
+            }
+        }, 4000);
 
         hostConn.on('data', (data) => {
             lastDataReceivedTime = Date.now();
@@ -1812,6 +1894,7 @@ function connectToStream(roomId) {
         });
 
         hostConn.on('close', () => {
+            if (streamRequestRetryInterval) clearInterval(streamRequestRetryInterval);
             console.log("Viewer: Conexão de dados com o Host fechada. Agendando reconexão...");
             scheduleViewerReconnect(viewerTargetRoomId);
         });
@@ -1833,6 +1916,10 @@ function connectToStream(roomId) {
             console.log("Viewer: Recebida stream WebRTC do peer:", call.peer, "Stream ID:", remoteStream.id);
             lastDataReceivedTime = Date.now();
             addRemoteStream(call.peer, remoteStream, call);
+        });
+
+        call.on('error', (err) => {
+            console.warn("Viewer: Erro na chamada WebRTC recebida:", err);
         });
 
         if (call.peerConnection) {
@@ -1884,13 +1971,19 @@ function updateStreamersList(streamerIds) {
     streamerIds.forEach(streamerId => {
         if (streamerId !== peer.id && !activeStreamerConnections.has(streamerId)) {
             console.log("Viewer: Iniciando conexão de dados com co-streamer/host:", streamerId);
-            const conn = peer.connect(streamerId);
+            const conn = peer.connect(streamerId, { reliable: true });
             activeStreamerConnections.set(streamerId, conn);
 
-            conn.on('open', () => {
+            function sendJoinToStreamer() {
                 console.log("Viewer: Conexão de dados aberta com streamer:", streamerId);
                 conn.send({ type: 'join-as-viewer' });
-            });
+            }
+
+            if (conn.open) {
+                sendJoinToStreamer();
+            } else {
+                conn.on('open', sendJoinToStreamer);
+            }
 
             conn.on('close', () => {
                 console.log("Viewer: Conexão de dados com streamer fechada:", streamerId);
@@ -1956,8 +2049,8 @@ function addRemoteStream(streamerId, remoteStream, call) {
     controls.className = 'stream-controls';
 
     const btnMute = document.createElement('button');
-    btnMute.textContent = '🔊';
-    btnMute.title = 'Mudar Áudio';
+    btnMute.textContent = '🔇';
+    btnMute.title = 'Ativar/Desativar Áudio';
 
     const btnClose = document.createElement('button');
     btnClose.textContent = '❌';
@@ -1976,6 +2069,7 @@ function addRemoteStream(streamerId, remoteStream, call) {
     videoEl.setAttribute('playsinline', '');
     videoEl.setAttribute('webkit-playsinline', '');
     videoEl.controls = false;
+    videoEl.muted = true; // Inicia mutado para garantir reprodução imediata sem bloqueio de autoplay
 
     card.appendChild(videoEl);
 
@@ -1990,6 +2084,9 @@ function addRemoteStream(streamerId, remoteStream, call) {
         e.stopPropagation();
         videoEl.muted = !videoEl.muted;
         btnMute.textContent = videoEl.muted ? '🔇' : '🔊';
+        if (!videoEl.muted) {
+            videoEl.play().catch(e => console.warn("Aviso ao ativar áudio:", e));
+        }
     };
 
     // Fechar stream manualmente
@@ -2007,12 +2104,19 @@ function addRemoteStream(streamerId, remoteStream, call) {
 
     activeStreams.set(streamerId, { card, videoEl, stream: remoteStream, call });
 
-    videoEl.play().catch(err => {
-        console.log("Autoplay bloqueado pelo navegador:", err);
-        viewerPlaceholder.classList.remove('hidden');
-        viewerPlaceholderText.textContent = "Áudio bloqueado pelo navegador. Clique abaixo para iniciar as transmissões.";
-        btnUnmuteViewer.classList.remove('hidden');
+    // Inicia a reprodução
+    videoEl.play().then(() => {
+        // Tenta desmutar caso o usuário já tenha interagido
+        videoEl.muted = false;
+        btnMute.textContent = '🔊';
+    }).catch(err => {
+        // Se autoplay com som foi bloqueado pelo navegador, garante reprodução mutada e exibe aviso
+        console.log("Autoplay com áudio restrito pelo navegador. Mantendo mudo:", err);
         videoEl.muted = true;
+        btnMute.textContent = '🔇';
+        viewerPlaceholder.classList.remove('hidden');
+        viewerPlaceholderText.textContent = "Áudio bloqueado pelo navegador. Clique abaixo para ativar o som.";
+        btnUnmuteViewer.classList.remove('hidden');
         videoEl.play().catch(e => console.error(e));
     });
 
