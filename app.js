@@ -1,3 +1,18 @@
+// Compatibilidade de ICE Candidates para navegadores (Firefox / Safari / Chrome)
+if (typeof window !== 'undefined' && window.RTCPeerConnection) {
+    const originalAddIceCandidate = RTCPeerConnection.prototype.addIceCandidate;
+    RTCPeerConnection.prototype.addIceCandidate = function(candidate, ...args) {
+        // Firefox e versões específicas rejeitam quando recebem candidate vazio (end-of-candidates)
+        if (!candidate || candidate.candidate === '' || candidate.candidate === null) {
+            return Promise.resolve();
+        }
+        return originalAddIceCandidate.apply(this, [candidate, ...args]).catch(err => {
+            console.warn("Aviso não-fatal ao adicionar ICE candidate:", err);
+            return Promise.resolve();
+        });
+    };
+}
+
 // Constantes e Estados da Aplicação
 const PEER_PREFIX = "streamshare-room-"; // Prefixo para evitar conflito de IDs globais no PeerJS Cloud
 
@@ -1282,6 +1297,8 @@ async function startStreaming(roomId) {
                         peer.reconnect();
                     }
                 }, 2000);
+            } else if (err.type === 'webrtc') {
+                console.warn("Aviso WebRTC transitório no Streamer:", err);
             } else {
                 showToast(`Aviso de conexão: ${err.type}`);
                 if (btnStopStream.disabled) {
@@ -1476,6 +1493,8 @@ function switchToCoStreamer(cleanRoomId) {
             setTimeout(() => {
                 if (peer && !peer.destroyed) peer.reconnect();
             }, 2000);
+        } else if (err.type === 'webrtc') {
+            console.warn("Aviso WebRTC transitório no Co-Streamer:", err);
         } else {
             showToast(`Erro de Co-Streamer: ${err.type}`);
         }
@@ -1838,6 +1857,8 @@ function connectToStream(roomId) {
             if (peer && !peer.destroyed) {
                 peer.reconnect();
             }
+        } else if (err.type === 'webrtc') {
+            console.warn("Aviso WebRTC não-fatal no Viewer:", err);
         } else {
             showToast(`Erro de conexão: ${err.type}`);
             disconnectViewer();
@@ -1951,7 +1972,9 @@ function addRemoteStream(streamerId, remoteStream, call) {
     const videoEl = document.createElement('video');
     videoEl.srcObject = remoteStream;
     videoEl.autoplay = true;
-    videoEl.playsinline = true;
+    videoEl.playsInline = true;
+    videoEl.setAttribute('playsinline', '');
+    videoEl.setAttribute('webkit-playsinline', '');
     videoEl.controls = false;
 
     card.appendChild(videoEl);
