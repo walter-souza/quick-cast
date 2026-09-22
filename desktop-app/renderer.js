@@ -1,3 +1,17 @@
+// Compatibilidade de ICE Candidates para navegadores/Chromium
+if (typeof window !== 'undefined' && window.RTCPeerConnection) {
+    const originalAddIceCandidate = RTCPeerConnection.prototype.addIceCandidate;
+    RTCPeerConnection.prototype.addIceCandidate = function(candidate, ...args) {
+        if (!candidate || candidate.candidate === '' || candidate.candidate === null) {
+            return originalAddIceCandidate.apply(this, [null, ...args]).catch(() => Promise.resolve());
+        }
+        return originalAddIceCandidate.apply(this, [candidate, ...args]).catch(err => {
+            console.warn("Aviso não-fatal ao adicionar ICE candidate:", err);
+            return Promise.resolve();
+        });
+    };
+}
+
 // Constantes do PeerJS
 const PEER_PREFIX = "streamshare-room-";
 
@@ -19,6 +33,8 @@ const PEER_CONFIG = {
             { urls: 'stun:stun3.l.google.com:19302' },
             { urls: 'stun:stun4.l.google.com:19302' },
             { urls: 'stun:stun.cloudflare.com:3478' },
+            { urls: 'stun:stun.services.mozilla.com:3478' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
             {
                 urls: 'turn:openrelay.metered.ca:80',
                 username: 'openrelay',
@@ -1047,6 +1063,14 @@ function handleViewerConnection(conn, profile) {
     function callViewer(force = false) {
         if (!localStream) return;
         try {
+            // Fecha qualquer chamada anterior para o mesmo viewer para evitar conflitos de ICE
+            activeCalls.forEach(c => {
+                if (c.peer === conn.peer) {
+                    try { c.close(); } catch (e) {}
+                    activeCalls.delete(c);
+                }
+            });
+
             console.log(`Desktop Streamer: Chamando viewer ${conn.peer} (force=${force})...`);
             const call = peer.call(conn.peer, localStream);
             if (call) {
@@ -1062,6 +1086,7 @@ function handleViewerConnection(conn, profile) {
 
                 call.on('error', (err) => {
                     console.warn(`Desktop Streamer: Erro na chamada com ${conn.peer}:`, err);
+                    activeCalls.delete(call);
                 });
 
                 call.on('close', () => {

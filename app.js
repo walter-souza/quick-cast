@@ -2,9 +2,8 @@
 if (typeof window !== 'undefined' && window.RTCPeerConnection) {
     const originalAddIceCandidate = RTCPeerConnection.prototype.addIceCandidate;
     RTCPeerConnection.prototype.addIceCandidate = function(candidate, ...args) {
-        // Firefox e versões específicas rejeitam quando recebem candidate vazio (end-of-candidates)
         if (!candidate || candidate.candidate === '' || candidate.candidate === null) {
-            return Promise.resolve();
+            return originalAddIceCandidate.apply(this, [null, ...args]).catch(() => Promise.resolve());
         }
         return originalAddIceCandidate.apply(this, [candidate, ...args]).catch(err => {
             console.warn("Aviso não-fatal ao adicionar ICE candidate:", err);
@@ -34,6 +33,8 @@ const PEER_CONFIG = {
             { urls: 'stun:stun3.l.google.com:19302' },
             { urls: 'stun:stun4.l.google.com:19302' },
             { urls: 'stun:stun.cloudflare.com:3478' },
+            { urls: 'stun:stun.services.mozilla.com:3478' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
             {
                 urls: 'turn:openrelay.metered.ca:80',
                 username: 'openrelay',
@@ -81,6 +82,8 @@ let coStreamers = new Map(); // Para o Host: coStreamerId -> Connection
 let viewerConnections = new Set(); // Para o Host: Set de conexões de viewers
 let activeStreams = new Map(); // Para o Viewer: streamerPeerId -> { card, videoEl, stream, call }
 let activeStreamerConnections = new Map(); // Para o Viewer: streamerPeerId -> DataConnection
+let activeHostCalls = new Map(); // Para o Host: viewerPeerId -> MediaConnection
+let activeCoStreamerCalls = new Map(); // Para o Co-Streamer: viewerPeerId -> MediaConnection
 
 // --- ESTADOS DE RECONEXÃO AUTOMÁTICA ---
 // Viewer
@@ -1380,11 +1383,27 @@ function registerViewer(conn, forceReCall = false) {
     // Liga para o viewer e envia a transmissão local (do Host)
     if (localStream && (!alreadyRegistered || forceReCall)) {
         try {
+            if (activeHostCalls.has(conn.peer)) {
+                console.log(`Host: Fechando chamada WebRTC anterior com viewer ${conn.peer} antes de chamar novamente.`);
+                const prev = activeHostCalls.get(conn.peer);
+                try { prev.close(); } catch (e) {}
+                activeHostCalls.delete(conn.peer);
+            }
+            
             console.log(`Host: Chamando viewer ${conn.peer} (forceReCall=${forceReCall})...`);
             const call = peer.call(conn.peer, localStream);
             if (call) {
+                activeHostCalls.set(conn.peer, call);
+                call.on('close', () => {
+                    if (activeHostCalls.get(conn.peer) === call) {
+                        activeHostCalls.delete(conn.peer);
+                    }
+                });
                 call.on('error', (err) => {
                     console.warn(`Host: Erro na chamada com viewer ${conn.peer}:`, err);
+                    if (activeHostCalls.get(conn.peer) === call) {
+                        activeHostCalls.delete(conn.peer);
+                    }
                 });
                 setTimeout(() => {
                     const currentQuality = selectStreamQuality.value;
@@ -1512,9 +1531,26 @@ function switchToCoStreamer(cleanRoomId) {
             }
             if (localStream && (!alreadyIn || forceReCall)) {
                 try {
+                    if (activeCoStreamerCalls.has(conn.peer)) {
+                        console.log(`Co-Streamer: Fechando chamada WebRTC anterior com viewer ${conn.peer} antes de chamar novamente.`);
+                        const prev = activeCoStreamerCalls.get(conn.peer);
+                        try { prev.close(); } catch (e) {}
+                        activeCoStreamerCalls.delete(conn.peer);
+                    }
                     const call = peer.call(conn.peer, localStream);
                     if (call) {
-                        call.on('error', (err) => console.warn("Co-streamer call error:", err));
+                        activeCoStreamerCalls.set(conn.peer, call);
+                        call.on('close', () => {
+                            if (activeCoStreamerCalls.get(conn.peer) === call) {
+                                activeCoStreamerCalls.delete(conn.peer);
+                            }
+                        });
+                        call.on('error', (err) => {
+                            console.warn("Co-streamer call error:", err);
+                            if (activeCoStreamerCalls.get(conn.peer) === call) {
+                                activeCoStreamerCalls.delete(conn.peer);
+                            }
+                        });
                         setTimeout(() => {
                             const currentQuality = selectStreamQuality.value;
                             const settings = QUALITY_PROFILES[currentQuality];
@@ -1905,8 +1941,33 @@ function connectToStream(roomId) {
         }
     });
 
+    let callRecoveryDebounce = new Map();
+
+    function requestStreamRecovery(streamerPeerId) {
+        if (callRecoveryDebounce.has(streamerPeerId)) return;
+        
+        callRecoveryDebounce.set(streamerPeerId, true);
+        setTimeout(() => callRecoveryDebounce.delete(streamerPeerId), 3000);
+        
+        console.log(`Viewer: Tentando auto-recuperar chamada com ${streamerPeerId}...`);
+        const conn = activeStreamerConnections.get(streamerPeerId);
+        if (conn && conn.open) {
+            console.log(`Viewer: Solicitando nova chamada ao streamer ${streamerPeerId} via DataConnection.`);
+            conn.send({ type: 'request-stream' });
+        } else {
+            console.warn(`Viewer: Conexão de dados indisponível para ${streamerPeerId}. Agendando reconexão da sala.`);
+            scheduleViewerReconnect(viewerTargetRoomId);
+        }
+    }
+
     peer.on('call', (call) => {
         console.log("Viewer: Recebendo chamada WebRTC de:", call.peer);
+        if (activeStreams.has(call.peer)) {
+            const existing = activeStreams.get(call.peer);
+            if (existing.call && existing.call !== call) {
+                try { existing.call.close(); } catch (e) {}
+            }
+        }
         call.answer(); // Responde sem enviar stream próprio
 
         call.on('stream', (remoteStream) => {
@@ -1917,6 +1978,7 @@ function connectToStream(roomId) {
 
         call.on('error', (err) => {
             console.warn("Viewer: Erro na chamada WebRTC recebida:", err);
+            requestStreamRecovery(call.peer);
         });
 
         if (call.peerConnection) {
@@ -1924,8 +1986,18 @@ function connectToStream(roomId) {
                 const state = call.peerConnection.connectionState;
                 console.log(`Viewer: WebRTC Connection State com ${call.peer}:`, state);
                 if (state === 'failed') {
-                    console.warn(`Viewer: Conexão WebRTC com ${call.peer} falhou definitivamente.`);
+                    console.warn(`Viewer: Conexão WebRTC com ${call.peer} falhou. Tentando reconexão automática...`);
                     removeRemoteStream(call.peer);
+                    requestStreamRecovery(call.peer);
+                }
+            });
+
+            call.peerConnection.addEventListener('iceconnectionstatechange', () => {
+                const iceState = call.peerConnection.iceConnectionState;
+                console.log(`Viewer: ICE State com ${call.peer}:`, iceState);
+                if (iceState === 'failed') {
+                    console.warn(`Viewer: ICE State falhou com ${call.peer}. Solicitando retransmissão...`);
+                    requestStreamRecovery(call.peer);
                 }
             });
         }
