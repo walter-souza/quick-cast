@@ -1,6 +1,11 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer } = require('electron');
 const path = require('path');
 
+// Otimizações de aceleração de hardware e renderização por GPU
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
+
 function createWindow() {
     const mainWindow = new BrowserWindow({
         width: 950,

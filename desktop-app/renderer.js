@@ -108,9 +108,9 @@ let selectedSourceId = null;
 
 // --- ELEMENTOS E CANVASES DO DOM ---
 const previewCanvas = document.getElementById('preview-canvas');
-const previewCtx = previewCanvas.getContext('2d');
+const previewCtx = previewCanvas.getContext('2d', { alpha: false, desynchronized: true }) || previewCanvas.getContext('2d');
 const composerCanvas = document.getElementById('composer-canvas');
-const composerCtx = composerCanvas.getContext('2d');
+const composerCtx = composerCanvas.getContext('2d', { alpha: false, desynchronized: true }) || composerCanvas.getContext('2d');
 
 const statusBadge = document.getElementById('status-badge');
 const statusText = document.getElementById('status-text');
@@ -144,8 +144,13 @@ function showToast(message) {
     }, 4000);
 }
 
-// --- CONFIGURAÇÃO DE QUALIDADE ---
+// --- CONFIGURAÇÃO DE QUALIDADE (30fps padrão, 60fps opcional) ---
 const QUALITY_PROFILES = {
+    '720p_30': { width: 1280, height: 720, fps: 30, bitrate: 1500 },
+    '720p_60': { width: 1280, height: 720, fps: 60, bitrate: 2500 },
+    '1080p_30': { width: 1920, height: 1080, fps: 30, bitrate: 3000 },
+    '1080p_60': { width: 1920, height: 1080, fps: 60, bitrate: 6000 },
+    // Fallbacks para compatibilidade
     '720p': { width: 1280, height: 720, fps: 30, bitrate: 1500 },
     '1080p': { width: 1920, height: 1080, fps: 30, bitrate: 3000 },
     'max': { width: 1920, height: 1080, fps: 60, bitrate: 6000 }
@@ -153,7 +158,7 @@ const QUALITY_PROFILES = {
 
 function getSelectedQualityProfile() {
     const key = qualitySelect.value;
-    return QUALITY_PROFILES[key] || QUALITY_PROFILES['720p'];
+    return QUALITY_PROFILES[key] || QUALITY_PROFILES['720p_30'] || QUALITY_PROFILES['720p'];
 }
 
 qualitySelect.addEventListener('change', () => {
@@ -208,7 +213,7 @@ function setupAudioNode(source) {
         const gainNode = audioContext.createGain();
         const analyserNode = audioContext.createAnalyser();
         
-        analyserNode.fftSize = 256;
+        analyserNode.fftSize = 64; // FFT leve para diminuir uso de CPU
         gainNode.gain.value = source.volume;
         
         audioSourceNode.connect(gainNode);
@@ -218,6 +223,8 @@ function setupAudioNode(source) {
         source.audioSourceNode = audioSourceNode;
         source.gainNode = gainNode;
         source.analyserNode = analyserNode;
+        source.frequencyData = new Uint8Array(analyserNode.frequencyBinCount);
+        source.lastVuPercent = 0;
     } catch (e) {
         console.error("Erro ao inicializar nó de áudio no Mixer:", e);
     }
@@ -597,16 +604,31 @@ function moveSourceZ(direction) {
     renderSources();
 }
 
-// --- RENDERIZAÇÃO DO COMPOSER CANVAS EM LOOP ---
+// --- RENDERIZAÇÃO DO COMPOSER CANVAS EM LOOP (OTIMIZADO COM VSYNC / requestAnimationFrame) ---
 let isRendering = false;
-let renderWorker = null;
+let renderAnimationId = null;
 
 function startRenderLoop() {
     if (isRendering) return;
     isRendering = true;
     
-    function draw() {
+    let lastFrameTime = performance.now();
+
+    function render(now) {
         if (!isRendering) return;
+        
+        renderAnimationId = requestAnimationFrame(render);
+        
+        const profile = getSelectedQualityProfile();
+        const targetFps = profile.fps || 30;
+        const frameInterval = 1000 / targetFps;
+        
+        const elapsed = now - lastFrameTime;
+        if (elapsed < frameInterval - 1.5) {
+            return; // Aguarda o próximo frame para sincronizar com o FPS alvo
+        }
+        
+        lastFrameTime = now - (elapsed % frameInterval);
         
         // 1. Renderiza no canvas invisível de saída (composer-canvas)
         composerCtx.fillStyle = '#000000';
@@ -615,15 +637,15 @@ function startRenderLoop() {
         const scene = activeScene();
         if (scene) {
             const sortedSources = [...scene.sources].sort((a, b) => a.zIndex - b.zIndex);
-            sortedSources.forEach(src => {
+            for (let i = 0; i < sortedSources.length; i++) {
+                const src = sortedSources[i];
                 if (src.visible && src.videoElement && src.videoElement.readyState >= 2) {
                     composerCtx.drawImage(src.videoElement, src.x, src.y, src.width, src.height);
                 }
-            });
+            }
         }
         
-        // 2. Copia para o preview-canvas visível com a escala correspondente
-        previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+        // 2. Copia para o preview-canvas visível
         previewCtx.drawImage(composerCanvas, 0, 0, previewCanvas.width, previewCanvas.height);
         
         // 3. Desenha as bordas e alças do editor sobre o preview-canvas
@@ -635,43 +657,7 @@ function startRenderLoop() {
         }
     }
     
-    const profile = getSelectedQualityProfile();
-    const fps = profile.fps || 30;
-    
-    try {
-        const blob = new Blob([
-            `let intervalId = null;
-            self.onmessage = function(e) {
-                if (e.data.action === 'start') {
-                    if (intervalId) clearInterval(intervalId);
-                    intervalId = setInterval(function() {
-                        self.postMessage('tick');
-                    }, 1000 / e.data.fps);
-                } else if (e.data.action === 'stop') {
-                    if (intervalId) {
-                        clearInterval(intervalId);
-                        intervalId = null;
-                    }
-                }
-            };`
-        ], { type: 'application/javascript' });
-        
-        renderWorker = new Worker(URL.createObjectURL(blob));
-        renderWorker.onmessage = (e) => {
-            if (e.data === 'tick') {
-                draw();
-            }
-        };
-        renderWorker.postMessage({ action: 'start', fps: fps });
-    } catch (err) {
-        console.warn("Falha ao inicializar Web Worker ticker, usando fallback requestAnimationFrame:", err);
-        function loop() {
-            if (!isRendering) return;
-            draw();
-            requestAnimationFrame(loop);
-        }
-        requestAnimationFrame(loop);
-    }
+    renderAnimationId = requestAnimationFrame(render);
 }
 
 const HANDLE_SIZE = 10;
@@ -991,7 +977,7 @@ window.addEventListener('mouseup', () => {
     resizeHandle = null;
 });
 
-// --- LOOP DO MIXER VU METERS ---
+// --- LOOP DO MIXER VU METERS OTIMIZADO (100ms + zero GC) ---
 let vuInterval = null;
 
 function startVULoop() {
@@ -1001,27 +987,36 @@ function startVULoop() {
         const scene = activeScene();
         if (!scene) return;
         
-        scene.sources.forEach(src => {
+        for (let i = 0; i < scene.sources.length; i++) {
+            const src = scene.sources[i];
             const vuBar = document.getElementById(`vu-bar-${src.id}`);
-            if (!vuBar) return;
+            if (!vuBar) continue;
             
             if (src.analyserNode && src.visible && !src.muted) {
-                const array = new Uint8Array(src.analyserNode.frequencyBinCount);
-                src.analyserNode.getByteFrequencyData(array);
+                if (!src.frequencyData || src.frequencyData.length !== src.analyserNode.frequencyBinCount) {
+                    src.frequencyData = new Uint8Array(src.analyserNode.frequencyBinCount);
+                }
+                src.analyserNode.getByteFrequencyData(src.frequencyData);
                 
                 let sum = 0;
-                for (let i = 0; i < array.length; i++) {
-                    sum += array[i];
+                const len = src.frequencyData.length;
+                for (let j = 0; j < len; j += 2) {
+                    sum += src.frequencyData[j];
                 }
-                const average = sum / array.length;
-                // Escala de forma perceptível
+                const average = sum / (len / 2);
                 const percent = Math.min(100, Math.round((average / 110) * 100));
-                vuBar.style.width = `${percent}%`;
+                if (src.lastVuPercent !== percent) {
+                    src.lastVuPercent = percent;
+                    vuBar.style.width = `${percent}%`;
+                }
             } else {
-                vuBar.style.width = '0%';
+                if (src.lastVuPercent !== 0) {
+                    src.lastVuPercent = 0;
+                    vuBar.style.width = '0%';
+                }
             }
-        });
-    }, 50);
+        }
+    }, 100);
 }
 
 function stopVULoop() {
@@ -1319,10 +1314,9 @@ function stopStreaming() {
         localStream = null;
     }
     
-    if (renderWorker) {
-        renderWorker.postMessage({ action: 'stop' });
-        renderWorker.terminate();
-        renderWorker = null;
+    if (renderAnimationId) {
+        cancelAnimationFrame(renderAnimationId);
+        renderAnimationId = null;
     }
     isRendering = false;
     

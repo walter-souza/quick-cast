@@ -236,8 +236,13 @@ let composerCtx = null;
 let audioContext = null;
 let audioDestination = null;
 
-// Configuração de qualidade
+// Configuração de qualidade otimizada (30fps padrão, 60fps opcional)
 const QUALITY_PROFILES = {
+    '720p_30': { width: 1280, height: 720, fps: 30, bitrate: 1500 },
+    '720p_60': { width: 1280, height: 720, fps: 60, bitrate: 2500 },
+    '1080p_30': { width: 1920, height: 1080, fps: 30, bitrate: 3000 },
+    '1080p_60': { width: 1920, height: 1080, fps: 60, bitrate: 6000 },
+    // Fallbacks para compatibilidade
     '720p': { width: 1280, height: 720, fps: 30, bitrate: 1500 },
     '1080p': { width: 1920, height: 1080, fps: 30, bitrate: 3000 },
     'max': { width: 1920, height: 1080, fps: 60, bitrate: 6000 }
@@ -245,7 +250,7 @@ const QUALITY_PROFILES = {
 
 function getSelectedQualityProfile() {
     const key = selectStreamQuality.value;
-    return QUALITY_PROFILES[key] || QUALITY_PROFILES['720p'];
+    return QUALITY_PROFILES[key] || QUALITY_PROFILES['720p_30'] || QUALITY_PROFILES['720p'];
 }
 
 function initAudioContext() {
@@ -269,7 +274,7 @@ function setupAudioNode(source) {
         const gainNode = audioContext.createGain();
         const analyserNode = audioContext.createAnalyser();
         
-        analyserNode.fftSize = 256;
+        analyserNode.fftSize = 64; // Tamanho de FFT leve para reduzir uso de CPU no VU meter
         gainNode.gain.value = source.volume;
         
         audioSourceNode.connect(gainNode);
@@ -279,6 +284,8 @@ function setupAudioNode(source) {
         source.audioSourceNode = audioSourceNode;
         source.gainNode = gainNode;
         source.analyserNode = analyserNode;
+        source.frequencyData = new Uint8Array(analyserNode.frequencyBinCount);
+        source.lastVuPercent = 0;
     } catch (e) {
         console.error("Erro ao inicializar nó de áudio no Mixer Web:", e);
     }
@@ -591,33 +598,51 @@ function moveSourceZ(direction) {
     renderSources();
 }
 
-// --- RENDERIZAÇÃO DO COMPOSER CANVAS EM LOOP ---
+// // --- RENDERIZAÇÃO DO COMPOSER CANVAS EM LOOP (OTIMIZADO COM VSYNC / requestAnimationFrame) ---
 let isRendering = false;
-let renderWorker = null;
+let renderAnimationId = null;
 
 function startRenderLoop() {
     if (isRendering) return;
     isRendering = true;
     
-    function draw() {
+    let lastFrameTime = performance.now();
+
+    function render(now) {
         if (!isRendering) return;
         
+        renderAnimationId = requestAnimationFrame(render);
+        
+        const profile = getSelectedQualityProfile();
+        const targetFps = profile.fps || 30;
+        const frameInterval = 1000 / targetFps;
+        
+        const elapsed = now - lastFrameTime;
+        if (elapsed < frameInterval - 1.5) {
+            return; // Aguarda o próximo frame para sincronizar com o FPS alvo
+        }
+        
+        lastFrameTime = now - (elapsed % frameInterval);
+        
+        // 1. Renderiza no canvas invisível de saída
         composerCtx.fillStyle = '#000000';
         composerCtx.fillRect(0, 0, composerCanvas.width, composerCanvas.height);
         
         const scene = activeScene();
         if (scene) {
             const sortedSources = [...scene.sources].sort((a, b) => a.zIndex - b.zIndex);
-            sortedSources.forEach(src => {
+            for (let i = 0; i < sortedSources.length; i++) {
+                const src = sortedSources[i];
                 if (src.visible && src.videoElement && src.videoElement.readyState >= 2) {
                     composerCtx.drawImage(src.videoElement, src.x, src.y, src.width, src.height);
                 }
-            });
+            }
         }
         
-        previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+        // 2. Copia para o preview visível
         previewCtx.drawImage(composerCanvas, 0, 0, previewCanvas.width, previewCanvas.height);
         
+        // 3. Desenha controles visuais se houver fonte selecionada
         if (scene && selectedSourceId) {
             const src = scene.sources.find(s => s.id === selectedSourceId);
             if (src && src.visible) {
@@ -626,43 +651,7 @@ function startRenderLoop() {
         }
     }
     
-    const profile = getSelectedQualityProfile();
-    const fps = profile.fps || 30;
-    
-    try {
-        const blob = new Blob([
-            `let intervalId = null;
-            self.onmessage = function(e) {
-                if (e.data.action === 'start') {
-                    if (intervalId) clearInterval(intervalId);
-                    intervalId = setInterval(function() {
-                        self.postMessage('tick');
-                    }, 1000 / e.data.fps);
-                } else if (e.data.action === 'stop') {
-                    if (intervalId) {
-                        clearInterval(intervalId);
-                        intervalId = null;
-                    }
-                }
-            };`
-        ], { type: 'application/javascript' });
-        
-        renderWorker = new Worker(URL.createObjectURL(blob));
-        renderWorker.onmessage = (e) => {
-            if (e.data === 'tick') {
-                draw();
-            }
-        };
-        renderWorker.postMessage({ action: 'start', fps: fps });
-    } catch (err) {
-        console.warn("Falha ao inicializar Web Worker ticker, usando fallback requestAnimationFrame:", err);
-        function loop() {
-            if (!isRendering) return;
-            draw();
-            requestAnimationFrame(loop);
-        }
-        requestAnimationFrame(loop);
-    }
+    renderAnimationId = requestAnimationFrame(render);
 }
 
 const HANDLE_SIZE = 10;
@@ -981,7 +970,7 @@ function initMouseEvents() {
     });
 }
 
-// --- VU LOOP ---
+// --- VU LOOP OTIMIZADO (100ms + zero garbage collection) ---
 let vuInterval = null;
 
 function startVULoop() {
@@ -991,26 +980,36 @@ function startVULoop() {
         const scene = activeScene();
         if (!scene) return;
         
-        scene.sources.forEach(src => {
+        for (let i = 0; i < scene.sources.length; i++) {
+            const src = scene.sources[i];
             const vuBar = document.getElementById(`vu-bar-${src.id}`);
-            if (!vuBar) return;
+            if (!vuBar) continue;
             
             if (src.analyserNode && src.visible && !src.muted) {
-                const array = new Uint8Array(src.analyserNode.frequencyBinCount);
-                src.analyserNode.getByteFrequencyData(array);
+                if (!src.frequencyData || src.frequencyData.length !== src.analyserNode.frequencyBinCount) {
+                    src.frequencyData = new Uint8Array(src.analyserNode.frequencyBinCount);
+                }
+                src.analyserNode.getByteFrequencyData(src.frequencyData);
                 
                 let sum = 0;
-                for (let i = 0; i < array.length; i++) {
-                    sum += array[i];
+                const len = src.frequencyData.length;
+                for (let j = 0; j < len; j += 2) {
+                    sum += src.frequencyData[j];
                 }
-                const average = sum / array.length;
+                const average = sum / (len / 2);
                 const percent = Math.min(100, Math.round((average / 110) * 100));
-                vuBar.style.width = `${percent}%`;
+                if (src.lastVuPercent !== percent) {
+                    src.lastVuPercent = percent;
+                    vuBar.style.width = `${percent}%`;
+                }
             } else {
-                vuBar.style.width = '0%';
+                if (src.lastVuPercent !== 0) {
+                    src.lastVuPercent = 0;
+                    vuBar.style.width = '0%';
+                }
             }
-        });
-    }, 50);
+        }
+    }, 100);
 }
 
 // --- BITRATE LIMITS ---
@@ -1046,9 +1045,13 @@ function applyBitrateLimit(bitrateBps) {
 }
 
 const QUALITY_BITRATE_SETTINGS = {
+    '720p_30': 1500000,
+    '720p_60': 2500000,
+    '1080p_30': 3000000,
+    '1080p_60': 6000000,
     '720p': 1500000,
     '1080p': 3000000,
-    'max': null
+    'max': 6000000
 };
 
 async function applyQualitySettings(qualityKey) {
@@ -1082,13 +1085,8 @@ async function applyQualitySettings(qualityKey) {
         }
     }
 
-    // Se estiver transmitindo, aplica no WebRTC e no worker
+    // Se estiver transmitindo, aplica no WebRTC
     if (localStream) {
-        // Atualiza taxa de frames no worker do renderizador
-        if (renderWorker) {
-            renderWorker.postMessage({ action: 'start', fps: profile.fps });
-        }
-
         // Aplica o limite de bitrate
         const bps = QUALITY_BITRATE_SETTINGS[qualityKey];
         applyBitrateLimit(bps);
@@ -1104,9 +1102,9 @@ selectStreamQuality.addEventListener('change', (e) => {
 // --- RENDER INICIALIZAÇÃO OBS E BINDINGS ---
 function initOBSStudio() {
     previewCanvas = document.getElementById('preview-canvas');
-    previewCtx = previewCanvas.getContext('2d');
+    previewCtx = previewCanvas.getContext('2d', { alpha: false, desynchronized: true }) || previewCanvas.getContext('2d');
     composerCanvas = document.getElementById('composer-canvas');
-    composerCtx = composerCanvas.getContext('2d');
+    composerCtx = composerCanvas.getContext('2d', { alpha: false, desynchronized: true }) || composerCanvas.getContext('2d');
     
     const profile = getSelectedQualityProfile();
     previewCanvas.width = 1280;
@@ -1594,10 +1592,9 @@ function stopStreaming() {
         vuInterval = null;
     }
     
-    if (renderWorker) {
-        renderWorker.postMessage({ action: 'stop' });
-        renderWorker.terminate();
-        renderWorker = null;
+    if (renderAnimationId) {
+        cancelAnimationFrame(renderAnimationId);
+        renderAnimationId = null;
     }
     isRendering = false;
     
