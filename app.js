@@ -651,48 +651,33 @@ function moveSourceZ(direction) {
     renderSources();
 }
 
-// // --- RENDERIZAÇÃO DO COMPOSER CANVAS EM LOOP (OTIMIZADO COM VSYNC / requestAnimationFrame) ---
+// --- RENDERIZAÇÃO DO COMPOSER CANVAS (VSYNC + SUPORTE PARA BACKGROUND TABS) ---
 let isRendering = false;
 let renderAnimationId = null;
+let bgRenderInterval = null;
 
-function startRenderLoop() {
-    if (isRendering) return;
-    isRendering = true;
+function renderFrame() {
+    if (!composerCtx || !composerCanvas) return;
     
-    let lastFrameTime = performance.now();
-
-    function render(now) {
-        if (!isRendering) return;
-        
-        renderAnimationId = requestAnimationFrame(render);
-        
-        const profile = getSelectedQualityProfile();
-        const targetFps = profile.fps || 30;
-        const frameInterval = 1000 / targetFps;
-        
-        const elapsed = now - lastFrameTime;
-        if (elapsed < frameInterval - 1.5) {
-            return; // Aguarda o próximo frame para sincronizar com o FPS alvo
-        }
-        
-        lastFrameTime = now - (elapsed % frameInterval);
-        
-        // 1. Renderiza no canvas invisível de saída
-        composerCtx.fillStyle = '#000000';
-        composerCtx.fillRect(0, 0, composerCanvas.width, composerCanvas.height);
-        
-        const scene = activeScene();
-        if (scene) {
-            const sortedSources = [...scene.sources].sort((a, b) => a.zIndex - b.zIndex);
-            for (let i = 0; i < sortedSources.length; i++) {
-                const src = sortedSources[i];
-                if (src.visible && src.videoElement && src.videoElement.readyState >= 2) {
+    // 1. Renderiza no canvas de composição
+    composerCtx.fillStyle = '#000000';
+    composerCtx.fillRect(0, 0, composerCanvas.width, composerCanvas.height);
+    
+    const scene = activeScene();
+    if (scene) {
+        const sortedSources = [...scene.sources].sort((a, b) => a.zIndex - a.zIndex);
+        for (let i = 0; i < sortedSources.length; i++) {
+            const src = sortedSources[i];
+            if (src.visible && src.videoElement && src.videoElement.readyState >= 2) {
+                try {
                     composerCtx.drawImage(src.videoElement, src.x, src.y, src.width, src.height);
-                }
+                } catch (e) {}
             }
         }
-        
-        // 2. Copia para o preview visível
+    }
+    
+    // 2. Copia para o preview visível se a aba estiver visível
+    if (previewCtx && previewCanvas && !document.hidden) {
         previewCtx.drawImage(composerCanvas, 0, 0, previewCanvas.width, previewCanvas.height);
         
         // 3. Desenha controles visuais se houver fonte selecionada
@@ -703,8 +688,53 @@ function startRenderLoop() {
             }
         }
     }
+}
+
+function startRenderLoop() {
+    if (isRendering) return;
+    isRendering = true;
     
-    renderAnimationId = requestAnimationFrame(render);
+    let lastFrameTime = performance.now();
+
+    function loop(now) {
+        if (!isRendering) return;
+        
+        renderAnimationId = requestAnimationFrame(loop);
+        
+        const profile = getSelectedQualityProfile();
+        const targetFps = profile.fps || 30;
+        const frameInterval = 1000 / targetFps;
+        
+        const elapsed = now - lastFrameTime;
+        if (elapsed < frameInterval - 1.5) {
+            return;
+        }
+        
+        lastFrameTime = now - (elapsed % frameInterval);
+        renderFrame();
+    }
+    
+    renderAnimationId = requestAnimationFrame(loop);
+    renderFrame(); // Frame inicial imediato
+}
+
+if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            // Aba em background: ativa setInterval para garantir que o canvas continue gerando frames para o WebRTC
+            if (isRendering && !bgRenderInterval) {
+                const profile = getSelectedQualityProfile();
+                const targetFps = profile.fps || 30;
+                bgRenderInterval = setInterval(renderFrame, 1000 / targetFps);
+            }
+        } else {
+            // Aba visível: desativa o intervalo de background
+            if (bgRenderInterval) {
+                clearInterval(bgRenderInterval);
+                bgRenderInterval = null;
+            }
+        }
+    });
 }
 
 const HANDLE_SIZE = 10;
@@ -1463,7 +1493,8 @@ function registerViewer(conn, forceReCall = false) {
     sendStreamersList(conn);
     
     // Liga para o viewer e envia a transmissão local (do Host)
-    if (localStream && (!alreadyRegistered || forceReCall)) {
+    const needsCall = forceReCall || !activeHostCalls.has(conn.peer);
+    if (localStream && needsCall) {
         try {
             if (activeHostCalls.has(conn.peer)) {
                 console.log(`Host: Fechando chamada WebRTC anterior com viewer ${conn.peer} antes de chamar novamente.`);
@@ -1611,7 +1642,8 @@ function switchToCoStreamer(cleanRoomId) {
                 viewerConnections.add(conn);
                 updateViewerCount();
             }
-            if (localStream && (!alreadyIn || forceReCall)) {
+            const needsCall = forceReCall || !activeCoStreamerCalls.has(conn.peer);
+            if (localStream && needsCall) {
                 try {
                     if (activeCoStreamerCalls.has(conn.peer)) {
                         console.log(`Co-Streamer: Fechando chamada WebRTC anterior com viewer ${conn.peer} antes de chamar novamente.`);
@@ -1713,6 +1745,10 @@ function stopStreaming() {
     if (renderAnimationId) {
         cancelAnimationFrame(renderAnimationId);
         renderAnimationId = null;
+    }
+    if (bgRenderInterval) {
+        clearInterval(bgRenderInterval);
+        bgRenderInterval = null;
     }
     isRendering = false;
     
@@ -2277,21 +2313,24 @@ function addRemoteStream(streamerId, remoteStream, call) {
 
     activeStreams.set(streamerId, { card, videoEl, stream: remoteStream, call });
 
-    // Inicia a reprodução
-    videoEl.play().then(() => {
-        // Tenta desmutar caso o usuário já tenha interagido
-        videoEl.muted = false;
-        btnMute.textContent = '🔊';
-    }).catch(err => {
-        // Se autoplay com som foi bloqueado pelo navegador, garante reprodução mutada e exibe aviso
-        console.log("Autoplay com áudio restrito pelo navegador. Mantendo mudo:", err);
-        videoEl.muted = true;
-        btnMute.textContent = '🔇';
-        viewerPlaceholder.classList.remove('hidden');
-        viewerPlaceholderText.textContent = "Áudio bloqueado pelo navegador. Clique abaixo para ativar o som.";
-        btnUnmuteViewer.classList.remove('hidden');
-        videoEl.play().catch(e => console.error(e));
-    });
+    // Inicia a reprodução garantida (mutado primeiro para obedecer às políticas de autoplay)
+    videoEl.muted = true;
+    viewerPlaceholder.classList.add('hidden');
+    
+    const playPromise = videoEl.play();
+    if (playPromise !== undefined) {
+        playPromise.then(() => {
+            console.log("Viewer: Vídeo transmitido com sucesso!");
+            viewerPlaceholder.classList.add('hidden');
+            btnUnmuteViewer.classList.remove('hidden');
+        }).catch(err => {
+            console.warn("Viewer: Autoplay bloqueado pelo navegador, forçando mutado:", err);
+            videoEl.muted = true;
+            videoEl.play().catch(e => console.error("Falha ao reproduzir vídeo:", e));
+            viewerPlaceholder.classList.add('hidden');
+            btnUnmuteViewer.classList.remove('hidden');
+        });
+    }
 
     updateViewerLayout();
     updateViewerStatusText();
@@ -2465,15 +2504,19 @@ btnTheaterMode.addEventListener('click', () => {
 
 
 // --- AUTO-CONECTAR SE HOUVER PARÂMETRO NA URL ---
-
-window.addEventListener('DOMContentLoaded', () => {
+function checkAutoConnect() {
     const urlParams = new URLSearchParams(window.location.search);
     const roomParam = urlParams.get('room');
     if (roomParam) {
         viewerRoomInput.value = roomParam;
-        // Pequeno timeout para garantir que o DOM e bibliotecas estão totalmente prontos
         setTimeout(() => {
             connectToStream(roomParam);
-        }, 500);
+        }, 300);
     }
-});
+}
+
+if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', checkAutoConnect);
+} else {
+    checkAutoConnect();
+}
