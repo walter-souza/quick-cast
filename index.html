@@ -20,16 +20,32 @@
         <main>
             <!-- 1. SELEÇÃO DE MODO E CONFIGURAÇÃO -->
             <section id="setup-section" class="section active">
+                <!-- Destaque 1-Clique -->
+                <div id="select-quick-stream" class="quick-start-card">
+                    <div class="quick-start-badge">⚡ RECOMENDADO • 1-CLIQUE</div>
+                    <div class="quick-start-body">
+                        <div class="quick-start-icon">🚀</div>
+                        <div class="quick-start-details">
+                            <h3>Transmissão Rápida</h3>
+                            <p>Compartilhe sua tela instantaneamente. O link da sala é gerado e copiado automaticamente para você enviar aos amigos!</p>
+                        </div>
+                        <button id="btn-quick-start" class="btn btn-primary btn-quick-action" type="button">
+                            <span>Transmitir Agora</span>
+                            <span class="arrow-icon">➔</span>
+                        </button>
+                    </div>
+                </div>
+
                 <div class="mode-selection">
                     <div id="select-streamer" class="mode-card">
-                        <div class="mode-icon">🖥️</div>
-                        <h3>Transmitir Tela</h3>
-                        <p>Compartilhe sua tela e áudio com seus amigos através de um link.</p>
+                        <div class="mode-icon">🎬</div>
+                        <h3>Modo Estúdio (OBS)</h3>
+                        <p>Controle avançado com múltiplas cenas, webcam sobreposta e mixer de áudio.</p>
                     </div>
                     <div id="select-viewer" class="mode-card">
                         <div class="mode-icon">👀</div>
                         <h3>Assistir Transmissão</h3>
-                        <p>Digite o código da sala de um amigo para assistir à tela dele.</p>
+                        <p>Digite o código ou use o link de um amigo para assistir à tela dele.</p>
                     </div>
                 </div>
 
@@ -82,7 +98,11 @@
                             <label>Link de Compartilhamento</label>
                             <div class="share-input-group">
                                 <input type="text" id="share-link-input" readonly>
-                                <button id="btn-copy-link" class="btn btn-secondary">Copiar</button>
+                                <button id="btn-copy-link" class="btn btn-secondary" title="Copiar Link">📋 Copiar</button>
+                            </div>
+                            <div class="quick-share-buttons">
+                                <button id="btn-share-whatsapp" class="btn btn-whatsapp" type="button" title="Enviar no WhatsApp">💬 WhatsApp</button>
+                                <button id="btn-share-native" class="btn btn-secondary hidden" type="button" title="Compartilhar">🔗 Mais opções</button>
                             </div>
                         </div>
 

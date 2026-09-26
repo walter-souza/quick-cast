@@ -154,6 +154,122 @@ input[type="text"]:focus {
     background-color: #16a34a;
 }
 
+/* Quick Start 1-Click Banner */
+.quick-start-card {
+    position: relative;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(147, 51, 234, 0.12));
+    border: 2px solid rgba(59, 130, 246, 0.5);
+    border-radius: var(--border-radius);
+    padding: 24px;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    overflow: hidden;
+    box-shadow: 0 4px 20px rgba(59, 130, 246, 0.15);
+}
+
+.quick-start-card:hover {
+    border-color: var(--primary);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(59, 130, 246, 0.25);
+}
+
+.quick-start-badge {
+    display: inline-block;
+    background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 800;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+}
+
+.quick-start-body {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.quick-start-icon {
+    font-size: 2.8rem;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.quick-start-details {
+    flex: 1;
+}
+
+.quick-start-details h3 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+    color: #fff;
+}
+
+.quick-start-details p {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+
+.btn-quick-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 24px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
+    flex-shrink: 0;
+}
+
+.btn-quick-action:hover {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    box-shadow: 0 6px 20px rgba(37, 99, 235, 0.6);
+}
+
+.btn-quick-action .arrow-icon {
+    font-size: 1.1rem;
+    transition: transform 0.2s;
+}
+
+.quick-start-card:hover .btn-quick-action .arrow-icon {
+    transform: translateX(4px);
+}
+
+/* Quick Share Buttons */
+.quick-share-buttons {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.btn-whatsapp {
+    background-color: #25D366;
+    color: #fff;
+    flex: 1;
+    font-size: 0.85rem;
+    padding: 8px 12px;
+    border: none;
+    font-weight: 600;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.btn-whatsapp:hover {
+    background-color: #1ebc59;
+}
+
 /* Setup Mode Cards */
 .mode-selection {
     display: grid;

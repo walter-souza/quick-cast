@@ -133,6 +133,8 @@ const setupSection = document.getElementById('setup-section');
 const streamerSection = document.getElementById('streamer-section');
 const viewerSection = document.getElementById('viewer-section');
 
+const selectQuickStream = document.getElementById('select-quick-stream');
+const btnQuickStart = document.getElementById('btn-quick-start');
 const selectStreamer = document.getElementById('select-streamer');
 const selectViewer = document.getElementById('select-viewer');
 const streamerForm = document.getElementById('streamer-form');
@@ -146,6 +148,8 @@ const streamerStatusText = document.getElementById('streamer-status-text');
 const streamerViewersCount = document.getElementById('streamer-viewers-count');
 const shareLinkInput = document.getElementById('share-link-input');
 const btnCopyLink = document.getElementById('btn-copy-link');
+const btnShareWhatsapp = document.getElementById('btn-share-whatsapp');
+const btnShareNative = document.getElementById('btn-share-native');
 const selectStreamQuality = document.getElementById('select-stream-quality');
 
 const viewerRoomInput = document.getElementById('viewer-room-input');
@@ -192,10 +196,25 @@ btnBackElements.forEach(btn => {
     btn.addEventListener('click', () => {
         viewerForm.classList.add('hidden');
         selectStreamer.parentNode.classList.remove('hidden');
+        if (selectQuickStream) selectQuickStream.classList.remove('hidden');
     });
 });
 
-// Seleção do Card Streamer (Estúdio OBS)
+// Transmissão Rápida em 1-Clique
+if (selectQuickStream) {
+    selectQuickStream.addEventListener('click', () => {
+        startQuickStream();
+    });
+}
+
+if (btnQuickStart) {
+    btnQuickStart.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startQuickStream();
+    });
+}
+
+// Seleção do Card Streamer (Estúdio OBS Avançado)
 selectStreamer.addEventListener('click', () => {
     showSection(streamerSection);
     streamerRoomInput.value = generateSecureRoomId();
@@ -205,6 +224,7 @@ selectStreamer.addEventListener('click', () => {
 // Seleção do Card Viewer
 selectViewer.addEventListener('click', () => {
     selectViewer.parentNode.classList.add('hidden');
+    if (selectQuickStream) selectQuickStream.classList.add('hidden');
     viewerForm.classList.remove('hidden');
     viewerRoomInput.focus();
 });
@@ -217,6 +237,34 @@ btnCopyLink.addEventListener('click', () => {
         .then(() => showToast("Link copiado para a área de transferência! 📋"))
         .catch(() => showToast("Erro ao copiar link."));
 });
+
+// Compartilhamento rápido via WhatsApp
+if (btnShareWhatsapp) {
+    btnShareWhatsapp.addEventListener('click', () => {
+        if (!shareLinkInput.value) return;
+        const text = encodeURIComponent(`Assista minha transmissão ao vivo no StreamShare: ${shareLinkInput.value}`);
+        window.open(`https://api.whatsapp.com/send?text=${text}`, '_blank');
+    });
+}
+
+// Compartilhamento nativo do dispositivo (Web Share API)
+if (btnShareNative) {
+    if (navigator.share) {
+        btnShareNative.classList.remove('hidden');
+        btnShareNative.addEventListener('click', async () => {
+            if (!shareLinkInput.value) return;
+            try {
+                await navigator.share({
+                    title: 'StreamShare - Transmissão ao Vivo',
+                    text: 'Assista minha tela em tempo real no StreamShare:',
+                    url: shareLinkInput.value
+                });
+            } catch (err) {
+                console.log('Compartilhamento cancelado ou indisponível:', err);
+            }
+        });
+    }
+}
 
 // --- ESTADO DO STUDIO WEB (SCENES E SOURCES) ---
 let scenes = [
@@ -545,9 +593,11 @@ async function addDisplaySource() {
         renderMixer();
         showToast("Fonte de tela adicionada com sucesso!");
         hidePlaceholder();
+        return true;
     } catch (err) {
         console.error("Erro ao capturar display:", err);
         showToast("Cancelado ou falha ao iniciar captura de tela.");
+        return false;
     }
 }
 
@@ -1202,6 +1252,26 @@ function initOBSStudio() {
     showPlaceholder();
 }
 
+// --- FLUXO DE TRANSMISSÃO RÁPIDA (1-CLIQUE) ---
+async function startQuickStream() {
+    const roomId = generateSecureRoomId();
+    streamerRoomInput.value = roomId;
+
+    showSection(streamerSection);
+    initOBSStudio();
+
+    showToast("Selecione a tela ou janela para transmitir... 🖥️");
+    const captured = await addDisplaySource();
+    if (!captured) {
+        // Se o usuário cancelou a janela nativa de captura de tela
+        stopStreaming();
+        return;
+    }
+
+    // Inicia a transmissão automaticamente
+    await startStreaming(roomId);
+}
+
 // --- STREAMER FLOW INICIAR E PARAR ---
 
 async function startStreaming(roomId) {
@@ -1272,7 +1342,19 @@ async function startStreaming(roomId) {
             streamerRoomInput.disabled = true;
             document.getElementById('btn-back-to-menu').disabled = true;
 
-            showToast("Transmissão com mixer OBS iniciada como Host! 🚀");
+            // Auto-cópia para a área de transferência
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(shareUrl)
+                    .then(() => {
+                        showToast("🚀 Ao vivo! Link copiado para a área de transferência (Ctrl+V) 📋");
+                    })
+                    .catch(() => {
+                        showToast("Transmissão iniciada como Host! 🚀");
+                    });
+            } else {
+                showToast("Transmissão iniciada como Host! 🚀");
+            }
+
             coStreamers.clear();
             viewerConnections.clear();
             updateViewerCount();
@@ -1673,6 +1755,8 @@ function resetStreamerUI() {
     streamerViewersCount.textContent = "0";
     shareLinkInput.value = "";
     showPlaceholder();
+    if (selectQuickStream) selectQuickStream.classList.remove('hidden');
+    if (selectStreamer && selectStreamer.parentNode) selectStreamer.parentNode.classList.remove('hidden');
 }
 
 function updateViewerCount() {
@@ -1701,19 +1785,33 @@ selectStreamer.addEventListener('click', () => {
 function cleanupViewerPeer() {
     stopStreamWatchdog();
     if (peer) {
-        peer.destroy();
+        const oldPeer = peer;
         peer = null;
+        try {
+            // Remove listeners para evitar que a destruição do peer antigo dispare reconnects fantasmas
+            if (oldPeer._events) {
+                delete oldPeer._events['disconnected'];
+                delete oldPeer._events['error'];
+                delete oldPeer._events['call'];
+                delete oldPeer._events['connection'];
+            }
+            oldPeer.destroy();
+        } catch (e) {
+            console.warn("Aviso ao limpar peer do viewer:", e);
+        }
     }
     const streamerIds = Array.from(activeStreams.keys());
     streamerIds.forEach(id => removeRemoteStream(id));
-    activeStreamerConnections.forEach(conn => conn.close());
+    activeStreamerConnections.forEach(conn => {
+        try { conn.close(); } catch (e) {}
+    });
     activeStreamerConnections.clear();
 }
 
 // --- RECONEXÃO AUTOMÁTICA DO VIEWER (Exponential Backoff) ---
 function scheduleViewerReconnect(roomId) {
     if (!roomId || viewerReconnectAttempts >= VIEWER_MAX_RECONNECT_ATTEMPTS) {
-        showToast("Não foi possível reconectar após várias tentativas. Verifique sua conexão.");
+        showToast("Não foi possível reconectar após várias tentativas. Verifique se o Host está online.");
         disconnectViewer();
         return;
     }
@@ -1728,9 +1826,8 @@ function scheduleViewerReconnect(roomId) {
 
     viewerStatusBadge.className = "badge badge-offline";
     viewerStatusBadge.textContent = "Reconectando";
-    viewerStatusText.textContent = `Reconectando em ${seconds}s... (${viewerReconnectAttempts}/${VIEWER_MAX_RECONNECT_ATTEMPTS})`;
-    viewerPlaceholderText.textContent = "Reconectando ao stream...";
-    showToast(`Conexão perdida. Reconectando em ${seconds}s... (${viewerReconnectAttempts}/${VIEWER_MAX_RECONNECT_ATTEMPTS})`);
+    viewerStatusText.textContent = `Aguardando Host... Reconectando em ${seconds}s (${viewerReconnectAttempts}/${VIEWER_MAX_RECONNECT_ATTEMPTS})`;
+    viewerPlaceholderText.textContent = "Host offline ou iniciando. Tentando reconectar...";
 
     if (viewerReconnectTimeout) clearTimeout(viewerReconnectTimeout);
     viewerReconnectTimeout = setTimeout(() => {
@@ -1935,9 +2032,12 @@ function connectToStream(roomId) {
 
     // Desconexão do signaling não deve matar a chamada P2P imediatamente
     peer.on('disconnected', () => {
+        if (!peer || peer.destroyed) return;
         console.warn("Viewer: Desconectado da sinalização. Tentando peer.reconnect()...");
-        if (peer && !peer.destroyed) {
+        try {
             peer.reconnect();
+        } catch (e) {
+            console.warn("Falha ao reconectar peer:", e);
         }
     });
 
@@ -2004,19 +2104,23 @@ function connectToStream(roomId) {
     });
 
     peer.on('error', (err) => {
-        console.error("Erro no PeerJS do Viewer:", err);
+        if (!peer) return;
+        console.warn("Aviso/Erro no PeerJS do Viewer:", err.type || err);
         if (err.type === 'peer-unavailable') {
-            showToast("Host não encontrado. Tentando novamente...");
+            viewerStatusBadge.className = "badge badge-offline";
+            viewerStatusBadge.textContent = "Aguardando";
+            viewerStatusText.textContent = "Host não encontrado ou offline. Tentando reconectar...";
+            viewerPlaceholderText.textContent = "Host ainda não iniciou a transmissão. Tentando reconectar...";
             scheduleViewerReconnect(viewerTargetRoomId);
         } else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
-            console.warn("Instabilidade de rede no canal de sinalização do Viewer. Tentando reconectar...");
+            console.warn("Instabilidade transitória de rede na sinalização do Viewer. Tentando reconectar...");
             if (peer && !peer.destroyed) {
-                peer.reconnect();
+                try { peer.reconnect(); } catch (e) {}
             }
         } else if (err.type === 'webrtc') {
             console.warn("Aviso WebRTC não-fatal no Viewer:", err);
         } else {
-            showToast(`Erro de conexão: ${err.type}`);
+            showToast(`Aviso de conexão: ${err.type || 'desconhecido'}`);
             disconnectViewer();
         }
     });
@@ -2316,6 +2420,8 @@ function resetViewerUI() {
     if (window.location.search.includes('room=')) {
         window.history.pushState({}, document.title, window.location.pathname);
     }
+    if (selectQuickStream) selectQuickStream.classList.remove('hidden');
+    if (selectStreamer && selectStreamer.parentNode) selectStreamer.parentNode.classList.remove('hidden');
 }
 
 btnUnmuteViewer.addEventListener('click', () => {

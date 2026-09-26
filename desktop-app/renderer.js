@@ -1274,7 +1274,17 @@ async function startStreaming() {
             btnStop.disabled = false;
             roomInput.disabled = true;
             
-            showToast("Transmissão com mixer OBS ativada! 🚀");
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(shareUrl)
+                    .then(() => {
+                        showToast("🚀 Ao vivo! Link copiado para a área de transferência 📋");
+                    })
+                    .catch(() => {
+                        showToast("Transmissão com mixer OBS ativada! 🚀");
+                    });
+            } else {
+                showToast("Transmissão com mixer OBS ativada! 🚀");
+            }
         });
 
         // Reconecta ao servidor de sinalização em caso de queda temporária de rede
