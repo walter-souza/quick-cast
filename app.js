@@ -148,8 +148,16 @@ const streamerStatusText = document.getElementById('streamer-status-text');
 const streamerViewersCount = document.getElementById('streamer-viewers-count');
 const shareLinkInput = document.getElementById('share-link-input');
 const btnCopyLink = document.getElementById('btn-copy-link');
+const btnShareDiscord = document.getElementById('btn-share-discord');
 const btnShareWhatsapp = document.getElementById('btn-share-whatsapp');
+const btnDiscordWebhookOpen = document.getElementById('btn-discord-webhook-open');
 const btnShareNative = document.getElementById('btn-share-native');
+const discordWebhookModal = document.getElementById('discord-webhook-modal');
+const modalWebhookClose = document.getElementById('modal-webhook-close');
+const discordWebhookUrlInput = document.getElementById('discord-webhook-url');
+const discordStreamTitleInput = document.getElementById('discord-stream-title');
+const btnSaveWebhook = document.getElementById('btn-save-webhook');
+const btnSendDiscordWebhook = document.getElementById('btn-send-discord-webhook');
 const selectStreamQuality = document.getElementById('select-stream-quality');
 
 const viewerRoomInput = document.getElementById('viewer-room-input');
@@ -238,12 +246,143 @@ btnCopyLink.addEventListener('click', () => {
         .catch(() => showToast("Erro ao copiar link."));
 });
 
+// Compartilhamento formatado para o Discord
+if (btnShareDiscord) {
+    btnShareDiscord.addEventListener('click', () => {
+        if (!shareLinkInput.value) return;
+        const roomId = streamerRoomInput.value.trim() || 'stream';
+        const discordFormattedMessage = `🔴 **Transmissão Ao Vivo no QuickCast!**\n> 📺 Assista em tempo real com zero delay (WebRTC):\n> ${shareLinkInput.value}`;
+        
+        navigator.clipboard.writeText(discordFormattedMessage)
+            .then(() => showToast("🎮 Mensagem formatada copiada! Cole no canal do Discord (Ctrl+V) 📋"))
+            .catch(() => {
+                shareLinkInput.select();
+                showToast("Copie o link da barra acima para o Discord!");
+            });
+    });
+}
+
 // Compartilhamento rápido via WhatsApp
 if (btnShareWhatsapp) {
     btnShareWhatsapp.addEventListener('click', () => {
         if (!shareLinkInput.value) return;
-        const text = encodeURIComponent(`Assista minha transmissão ao vivo no StreamShare: ${shareLinkInput.value}`);
+        const text = encodeURIComponent(`Assista minha transmissão ao vivo no QuickCast: ${shareLinkInput.value}`);
         window.open(`https://api.whatsapp.com/send?text=${text}`, '_blank');
+    });
+}
+
+// Modal e Configuração do Webhook do Discord
+if (btnDiscordWebhookOpen) {
+    // Carregar configurações salvas no localStorage
+    if (localStorage.getItem('quickcast_discord_webhook')) {
+        discordWebhookUrlInput.value = localStorage.getItem('quickcast_discord_webhook');
+    }
+    if (localStorage.getItem('quickcast_discord_title')) {
+        discordStreamTitleInput.value = localStorage.getItem('quickcast_discord_title');
+    }
+
+    btnDiscordWebhookOpen.addEventListener('click', () => {
+        discordWebhookModal.classList.remove('hidden');
+    });
+}
+
+if (modalWebhookClose) {
+    modalWebhookClose.addEventListener('click', () => {
+        discordWebhookModal.classList.add('hidden');
+    });
+}
+
+// Fechar modal clicando fora
+window.addEventListener('click', (e) => {
+    if (e.target === discordWebhookModal) {
+        discordWebhookModal.classList.add('hidden');
+    }
+});
+
+if (btnSaveWebhook) {
+    btnSaveWebhook.addEventListener('click', () => {
+        const url = discordWebhookUrlInput.value.trim();
+        const title = discordStreamTitleInput.value.trim();
+        localStorage.setItem('quickcast_discord_webhook', url);
+        localStorage.setItem('quickcast_discord_title', title);
+        showToast("Configurações do Discord salvas! 💾");
+        discordWebhookModal.classList.add('hidden');
+    });
+}
+
+if (btnSendDiscordWebhook) {
+    btnSendDiscordWebhook.addEventListener('click', async () => {
+        const webhookUrl = discordWebhookUrlInput.value.trim();
+        const streamTitle = discordStreamTitleInput.value.trim() || 'Transmissão Ao Vivo no QuickCast!';
+        const roomId = streamerRoomInput.value.trim() || 'stream';
+        const watchUrl = shareLinkInput.value || `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+
+        if (!webhookUrl) {
+            showToast("⚠️ Insira a URL do Webhook do Discord.");
+            discordWebhookUrlInput.focus();
+            return;
+        }
+
+        localStorage.setItem('quickcast_discord_webhook', webhookUrl);
+        localStorage.setItem('quickcast_discord_title', streamTitle);
+
+        btnSendDiscordWebhook.disabled = true;
+        btnSendDiscordWebhook.textContent = "Enviando...";
+
+        const payload = {
+            username: "QuickCast Live",
+            avatar_url: "https://raw.githubusercontent.com/Vendicated/Vencord/main/assets/icon.png",
+            embeds: [
+                {
+                    title: `🔴 ${streamTitle}`,
+                    description: `Transmissão ao vivo iniciada no **QuickCast**!\nClique no botão abaixo para assistir em tempo real com **zero delay** via WebRTC.`,
+                    url: watchUrl,
+                    color: 0x5865F2,
+                    fields: [
+                        {
+                            name: "🔑 Código da Sala",
+                            value: `\`${roomId}\``,
+                            inline: true
+                        },
+                        {
+                            name: "⚡ Latência",
+                            value: "< 500ms (P2P)",
+                            inline: true
+                        },
+                        {
+                            name: "📺 Assistir Agora",
+                            value: `[**👉 Abrir Transmissão no Navegador**](${watchUrl})`,
+                            inline: false
+                        }
+                    ],
+                    footer: {
+                        text: "QuickCast • Transmissão em tempo real"
+                    },
+                    timestamp: new Date().toISOString()
+                }
+            ]
+        };
+
+        try {
+            const resp = await fetch(webhookUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (resp.ok) {
+                showToast("🎉 Notificação enviada para o canal do Discord com sucesso!");
+                discordWebhookModal.classList.add('hidden');
+            } else {
+                showToast("❌ Erro ao enviar webhook para o Discord.");
+            }
+        } catch (err) {
+            console.error("Erro no Webhook:", err);
+            showToast("❌ Falha na conexão com o Discord.");
+        } finally {
+            btnSendDiscordWebhook.disabled = false;
+            btnSendDiscordWebhook.textContent = "🚀 Enviar Notificação Agora";
+        }
     });
 }
 
@@ -255,8 +394,8 @@ if (btnShareNative) {
             if (!shareLinkInput.value) return;
             try {
                 await navigator.share({
-                    title: 'StreamShare - Transmissão ao Vivo',
-                    text: 'Assista minha tela em tempo real no StreamShare:',
+                    title: 'QuickCast - Transmissão ao Vivo',
+                    text: 'Assista minha tela em tempo real no QuickCast:',
                     url: shareLinkInput.value
                 });
             } catch (err) {

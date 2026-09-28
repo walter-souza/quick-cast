@@ -3,8 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' wss://*.onrender.com https://*.onrender.com wss://*.peerjs.com https://*.peerjs.com wss://peerjs.com https://peerjs.com stun:* turn:* turns:* https://*.metered.ca https://unpkg.com; media-src 'self' blob:; img-src 'self' data:;">
-    <title>StreamShare MVP - Compartilhamento de Tela P2P</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://discord.com wss://*.onrender.com https://*.onrender.com wss://*.peerjs.com https://*.peerjs.com wss://peerjs.com https://peerjs.com stun:* turn:* turns:* https://*.metered.ca https://unpkg.com; media-src 'self' blob:; img-src 'self' data: https:;">
+    <title>QuickCast - Compartilhamento de Tela P2P & Live Stream</title>
+    
+    <!-- OpenGraph / Discord Live Embed Tags -->
+    <meta property="og:site_name" content="QuickCast Live" />
+    <meta property="og:title" content="🔴 QuickCast - Transmissão Ao Vivo" />
+    <meta property="og:description" content="Assista à transmissão em tempo real com zero delay via WebRTC. Clique para assistir direto no navegador!" />
+    <meta property="og:type" content="video.other" />
+    <meta name="theme-color" content="#5865F2" />
+    <meta name="twitter:card" content="summary_large_image" />
+
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
     <link rel="stylesheet" href="style.css">
     <!-- PeerJS CDN -->
@@ -101,8 +110,10 @@
                                 <button id="btn-copy-link" class="btn btn-secondary" title="Copiar Link">📋 Copiar</button>
                             </div>
                             <div class="quick-share-buttons">
+                                <button id="btn-share-discord" class="btn btn-discord" type="button" title="Copiar formatado para o Discord">🎮 Discord</button>
                                 <button id="btn-share-whatsapp" class="btn btn-whatsapp" type="button" title="Enviar no WhatsApp">💬 WhatsApp</button>
-                                <button id="btn-share-native" class="btn btn-secondary hidden" type="button" title="Compartilhar">🔗 Mais opções</button>
+                                <button id="btn-discord-webhook-open" class="btn btn-secondary" type="button" title="Configurar Webhook do Discord">📢 Webhook</button>
+                                <button id="btn-share-native" class="btn btn-secondary hidden" type="button" title="Compartilhar">🔗 Mais</button>
                             </div>
                         </div>
 
@@ -213,6 +224,31 @@
         <button id="menu-reset-size">Redefinir tamanho</button>
         <button id="menu-fit-screen">Ajustar para a tela</button>
         <button id="menu-stretch-screen">Esticar para a tela</button>
+    </div>
+
+    <!-- Modal de Configuração do Discord Webhook -->
+    <div id="discord-webhook-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📢 Notificação no Discord (Webhook)</h3>
+                <button id="modal-webhook-close" class="modal-close-btn" type="button">&times;</button>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.875rem;">
+                Envie um alerta com card rico (Embed) diretamente para o seu canal de texto no Discord quando iniciar a transmissão.
+            </p>
+            <div class="form-group">
+                <label for="discord-webhook-url">URL do Webhook do Discord:</label>
+                <input type="text" id="discord-webhook-url" placeholder="https://discord.com/api/webhooks/..." autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label for="discord-stream-title">Título da Transmissão:</label>
+                <input type="text" id="discord-stream-title" placeholder="ex: Jogando com a galera! 🎮" autocomplete="off">
+            </div>
+            <div class="modal-actions">
+                <button id="btn-save-webhook" class="btn btn-secondary" type="button">Salvar</button>
+                <button id="btn-send-discord-webhook" class="btn btn-discord" type="button">🚀 Enviar Notificação Agora</button>
+            </div>
+        </div>
     </div>
 
     <!-- Toast Notification -->

@@ -64,6 +64,10 @@
                         <input type="text" id="share-url" readonly>
                         <button id="btn-copy" class="btn btn-secondary">Copiar</button>
                     </div>
+                    <div class="quick-share-buttons" style="display: flex; gap: 8px; margin-top: 8px;">
+                        <button id="btn-share-discord" class="btn btn-discord" type="button" style="flex: 1;" title="Copiar formatado para o Discord">🎮 Discord</button>
+                        <button id="btn-discord-webhook-open" class="btn btn-secondary" type="button" style="flex: 1;" title="Configurar Webhook do Discord">📢 Webhook</button>
+                    </div>
                 </div>
             </section>
 
@@ -157,6 +161,31 @@
         <button id="menu-reset-size">Redefinir tamanho</button>
         <button id="menu-fit-screen">Ajustar para a tela</button>
         <button id="menu-stretch-screen">Esticar para a tela</button>
+    </div>
+
+    <!-- Modal de Configuração do Discord Webhook -->
+    <div id="discord-webhook-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📢 Notificação no Discord (Webhook)</h3>
+                <button id="modal-webhook-close" class="modal-close-btn" type="button">&times;</button>
+            </div>
+            <p style="color: #94a3b8; font-size: 0.85rem; line-height: 1.4;">
+                Envie um alerta com card rico (Embed) diretamente para o seu canal de texto no Discord quando iniciar a transmissão.
+            </p>
+            <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+                <label for="discord-webhook-url" style="color: #94a3b8; font-size: 0.85rem; font-weight: 600;">URL do Webhook do Discord:</label>
+                <input type="text" id="discord-webhook-url" placeholder="https://discord.com/api/webhooks/..." autocomplete="off">
+            </div>
+            <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+                <label for="discord-stream-title" style="color: #94a3b8; font-size: 0.85rem; font-weight: 600;">Título da Transmissão:</label>
+                <input type="text" id="discord-stream-title" placeholder="ex: Jogando com a galera! 🎮" autocomplete="off">
+            </div>
+            <div class="modal-actions">
+                <button id="btn-save-webhook" class="btn btn-secondary" type="button">Salvar</button>
+                <button id="btn-send-discord-webhook" class="btn btn-discord" type="button">🚀 Enviar Notificação Agora</button>
+            </div>
+        </div>
     </div>
 
     <div id="toast" class="toast"></div>
